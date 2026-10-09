@@ -4,8 +4,6 @@ import { apiFetch } from '../api';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import HveFields, { HveSignIn, emptyHveForm, hvePayload, readError } from '../components/HveAuth';
 
-const STEPS = 5;
-
 // Providers that require app passwords
 const APP_PASSWORD_PROVIDERS = ['gmail', 'outlook', 'yahoo'];
 
@@ -30,17 +28,22 @@ export default function Wizard({ onComplete }) {
   const [hveForm, setHveForm] = useState(emptyHveForm);
   const [hveSignedIn, setHveSignedIn] = useState(false);
 
+  const hveFlow = providerType === 'microsoft_hve';
+  const totalSteps = hveFlow ? 6 : 5;
+  const dnsStep = hveFlow ? 4 : 3;
+  const accessStep = hveFlow ? 5 : 4;
+
   // Load relay connection info
   useEffect(() => {
     apiFetch('/api/relay-info').then(r => r.json()).then(setRelayInfo).catch(() => {});
   }, []);
 
-  // Run DNS check when entering step 3
+  // Run DNS check when entering the DNS step
   useEffect(() => {
-    if (step === 3 && !dnsResults && !dnsLoading) {
+    if (step === dnsStep && !dnsResults && !dnsLoading) {
       checkDns();
     }
-  }, [step]);
+  }, [step, dnsStep]);
 
   // Step 1: Detect provider from email
   const detectProvider = async (force = false) => {
@@ -252,23 +255,31 @@ export default function Wizard({ onComplete }) {
     }));
   };
 
+  const testMailbox = async () => {
+    if (!providerId) return;
+    setTestLoading(true);
+    setTestResult(null);
+    try {
+      const res = await apiFetch(`/api/providers/${providerId}/test`, { method: 'POST' });
+      setTestResult(await res.json());
+    } catch (e) {
+      setTestResult({ healthy: false, error: String(e) });
+    }
+    setTestLoading(false);
+  };
+
   const nextStep = async () => {
-    if (step === 2 && providerType === 'microsoft_hve') {
+    if (step === 2 && hveFlow) {
       const saved = await persistHve();
       if (!saved) return;
-      const mode = saved.oauth_mode || hveForm.oauth_mode;
-      if (mode !== 'application' && !saved.oauth_signed_in) {
-        setTestResult({ healthy: false, error: t('providers.hve.needs_signin') });
-        return;
-      }
     } else if (step === 2 && !providerId) {
       const created = await saveProvider();
       if (!created) return;
     }
-    if (step === 4) {
+    if (step === accessStep) {
       await saveClient();
     }
-    setStep(s => Math.min(s + 1, STEPS));
+    setStep(s => Math.min(s + 1, totalSteps));
   };
 
   return (
@@ -285,7 +296,7 @@ export default function Wizard({ onComplete }) {
 
       {/* Progress */}
       <div className="wizard-steps">
-        {Array.from({ length: STEPS }, (_, i) => (
+        {Array.from({ length: totalSteps }, (_, i) => (
           <div key={i} className={`wizard-step ${i + 1 === step ? 'active' : i + 1 < step ? 'done' : ''}`} />
         ))}
       </div>
@@ -331,8 +342,8 @@ export default function Wizard({ onComplete }) {
       {/* Step 2: Connect account */}
       {step === 2 && (
         <div className="card">
-          <h2 className="card-title" style={{ marginBottom: 8 }}>{t('wizard.step2_title')}</h2>
-          <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 14 }}>{t('wizard.step2_desc')}</p>
+          <h2 className="card-title" style={{ marginBottom: 8 }}>{hveFlow ? t('providers.hve.app_title') : t('wizard.step2_title')}</h2>
+          <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 14 }}>{hveFlow ? t('providers.hve.app_intro') : t('wizard.step2_desc')}</p>
 
           {/* App password info box */}
           {needsAppPassword && (
@@ -351,28 +362,32 @@ export default function Wizard({ onComplete }) {
             </div>
           )}
 
-          <div className="form-group">
-            <label className="form-label">{t('wizard.step2_manual_host')}</label>
-            <input className="form-input" value={credentials.host} onChange={e => setCredentials({ ...credentials, host: e.target.value })} />
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div className="form-group">
-              <label className="form-label">{t('wizard.step2_manual_port')}</label>
-              <input className="form-input" type="number" value={credentials.port} onChange={e => setCredentials({ ...credentials, port: parseInt(e.target.value) })} />
-            </div>
-            <div className="form-group">
-              <label className="form-label">{t('wizard.step2_manual_tls')}</label>
-              <select className="form-input" value={credentials.tls} onChange={e => {
-                const tls = e.target.value;
-                const portMap = { starttls: 587, ssl: 465, none: 25 };
-                setCredentials({ ...credentials, tls, port: portMap[tls] || credentials.port });
-              }}>
-                <option value="starttls">{t('wizard.step2_tls_starttls')}</option>
-                <option value="ssl">{t('wizard.step2_tls_ssl')}</option>
-                <option value="none">{t('wizard.step2_tls_none')}</option>
-              </select>
-            </div>
-          </div>
+          {!hveFlow && (
+            <>
+              <div className="form-group">
+                <label className="form-label">{t('wizard.step2_manual_host')}</label>
+                <input className="form-input" value={credentials.host} onChange={e => setCredentials({ ...credentials, host: e.target.value })} />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div className="form-group">
+                  <label className="form-label">{t('wizard.step2_manual_port')}</label>
+                  <input className="form-input" type="number" value={credentials.port} onChange={e => setCredentials({ ...credentials, port: parseInt(e.target.value) })} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">{t('wizard.step2_manual_tls')}</label>
+                  <select className="form-input" value={credentials.tls} onChange={e => {
+                    const tls = e.target.value;
+                    const portMap = { starttls: 587, ssl: 465, none: 25 };
+                    setCredentials({ ...credentials, tls, port: portMap[tls] || credentials.port });
+                  }}>
+                    <option value="starttls">{t('wizard.step2_tls_starttls')}</option>
+                    <option value="ssl">{t('wizard.step2_tls_ssl')}</option>
+                    <option value="none">{t('wizard.step2_tls_none')}</option>
+                  </select>
+                </div>
+              </div>
+            </>
+          )}
           {providerType === 'microsoft_hve' ? (
             <HveFields value={hveForm} onChange={setHveForm} />
           ) : (
@@ -389,35 +404,64 @@ export default function Wizard({ onComplete }) {
               </div>
             </>
           )}
-          {providerType === 'microsoft_hve' && providerId && hveForm.oauth_mode !== 'application' && (
-            <HveSignIn
-              provider={{
-                id: providerId,
-                email,
-                oauth_mode: hveForm.oauth_mode,
-                oauth_credential: hveForm.credential,
-                oauth_signed_in: hveSignedIn,
-                oauth_tenant_id: hveForm.tenant_id,
-                oauth_client_id: hveForm.client_id,
-              }}
-              onChanged={(signedIn) => setHveSignedIn(!!signedIn)}
-              beforeSignIn={async () => !!(await persistHve())}
-            />
+          {hveFlow && testResult && !testResult.healthy && (
+            <div className="alert alert-error">{testResult.error}</div>
           )}
-
-          {testResult && (
+          {!hveFlow && testResult && (
             <div className={`alert ${testResult.healthy ? 'alert-success' : 'alert-error'}`}>
               {testResult.healthy ? t('wizard.step2_test_ok') : t('wizard.step2_test_fail', { error: testResult.error })}
             </div>
           )}
-          <button className="btn btn-secondary" onClick={testConnection} disabled={testLoading}>
-            {testLoading ? t('common.loading') : t('wizard.step2_test')}
-          </button>
+          {!hveFlow && (
+            <button className="btn btn-secondary" onClick={testConnection} disabled={testLoading}>
+              {testLoading ? t('common.loading') : t('wizard.step2_test')}
+            </button>
+          )}
         </div>
       )}
 
-      {/* Step 3: DNS check */}
-      {step === 3 && (
+      {hveFlow && step === 3 && (
+        <div className="card">
+          <h2 className="card-title" style={{ marginBottom: 8 }}>{t('providers.hve.signin_title')}</h2>
+          {hveForm.oauth_mode === 'application' ? (
+            <div className="alert alert-success">{t('providers.hve.app_mode')}</div>
+          ) : (
+            <>
+              <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 14 }}>{t('providers.hve.signin_intro', { email })}</p>
+              {providerId && (
+                <HveSignIn
+                  provider={{
+                    id: providerId,
+                    email,
+                    oauth_mode: hveForm.oauth_mode,
+                    oauth_credential: 'certificate',
+                    oauth_signed_in: hveSignedIn,
+                    oauth_tenant_id: hveForm.tenant_id,
+                    oauth_client_id: hveForm.client_id,
+                  }}
+                  showEdit={false}
+                  onChanged={(signedIn) => setHveSignedIn(!!signedIn)}
+                />
+              )}
+            </>
+          )}
+          {(hveSignedIn || hveForm.oauth_mode === 'application') && (
+            <>
+              {testResult && (
+                <div className={`alert ${testResult.healthy ? 'alert-success' : 'alert-error'}`}>
+                  {testResult.healthy ? t('wizard.step2_test_ok') : t('wizard.step2_test_fail', { error: testResult.error })}
+                </div>
+              )}
+              <button className="btn btn-secondary" onClick={testMailbox} disabled={testLoading}>
+                {testLoading ? t('common.loading') : t('wizard.step2_test')}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* DNS check */}
+      {step === dnsStep && (
         <div className="card">
           <h2 className="card-title" style={{ marginBottom: 8 }}>{t('wizard.step3_title')}</h2>
           <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 14 }}>{t('wizard.step3_desc')}</p>
@@ -447,7 +491,7 @@ export default function Wizard({ onComplete }) {
       )}
 
       {/* Step 4: Security */}
-      {step === 4 && (
+      {step === accessStep && (
         <div className="card">
           <h2 className="card-title" style={{ marginBottom: 8 }}>{t('wizard.step4_title')}</h2>
           <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 14 }}>{t('wizard.step4_desc')}</p>
@@ -489,7 +533,7 @@ export default function Wizard({ onComplete }) {
       )}
 
       {/* Step 5: Done */}
-      {step === 5 && (
+      {step === totalSteps && (
         <div className="card">
           <h2 className="card-title" style={{ marginBottom: 8 }}>{t('wizard.step5_title')}</h2>
           <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 14 }}>{t('wizard.step5_desc')}</p>
@@ -527,13 +571,14 @@ export default function Wizard({ onComplete }) {
         {step > 1 ? (
           <button className="btn btn-secondary" onClick={() => setStep(s => s - 1)}>{t('common.back')}</button>
         ) : <div />}
-        {step < STEPS ? (
+        {step < totalSteps ? (
           <button
             className="btn btn-primary"
             onClick={nextStep}
             disabled={
               (step === 1 && !email) ||
-              (step === 4 && accessMethod === 'ip' && !clientIp.trim())
+              (hveFlow && step === 3 && hveForm.oauth_mode !== 'application' && !hveSignedIn) ||
+              (step === accessStep && accessMethod === 'ip' && !clientIp.trim())
             }
           >
             {t('common.next')}

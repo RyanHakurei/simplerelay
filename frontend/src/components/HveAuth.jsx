@@ -5,21 +5,20 @@ import { apiFetch } from '../api';
 export const emptyHveForm = () => ({
   tenant_id: '',
   client_id: '',
-  credential: 'public',
+  credential: 'certificate',
   client_secret: '',
   certificate_pem: '',
   private_key_pem: '',
   oauth_mode: 'delegated',
 });
 
-// The form calls the credential "credential". The API field is oauth_credential.
+// The app credential is always a certificate. The API field is oauth_credential.
 export function hvePayload(form) {
   return {
     tenant_id: form.tenant_id,
     client_id: form.client_id,
-    oauth_credential: form.credential,
+    oauth_credential: 'certificate',
     oauth_mode: form.oauth_mode,
-    client_secret: form.client_secret,
     certificate_pem: form.certificate_pem,
     private_key_pem: form.private_key_pem,
   };
@@ -63,7 +62,7 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
       ...current,
       tenant_id: current.tenant_id || cfg.tenant_id || '',
       client_id: current.client_id || cfg.client_id || '',
-      credential: current.credential === 'public' && cfg.credential ? cfg.credential : current.credential,
+      credential: 'certificate',
     }));
   }, [cfg, prefill, onChange]);
 
@@ -71,10 +70,6 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
 
   return (
     <div>
-      <div className="alert alert-warning" style={{ marginBottom: 12 }}>
-        {t('providers.hve.intro')}
-      </div>
-
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <div className="form-group">
           <label className="form-label">{t('providers.hve.tenant')}</label>
@@ -98,38 +93,7 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
         </div>
       </div>
 
-      <div className="form-group">
-        <label className="form-label">{t('providers.hve.credential')}</label>
-        <select
-          className="form-input"
-          value={value.credential}
-          onChange={e => set({ credential: e.target.value })}
-        >
-          <option value="public">{t('providers.hve.credential_public')}</option>
-          <option value="secret">{t('providers.hve.credential_secret')}</option>
-          <option value="certificate">{t('providers.hve.credential_certificate')}</option>
-        </select>
-      </div>
-
-      {value.credential === 'secret' && (
-        <div className="form-group">
-          <label className="form-label">{t('providers.hve.secret')}</label>
-          {keepHint && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{t('providers.hve.secret_keep')}</div>}
-          {!keepHint && cfg?.credential === 'secret' && !value.client_secret && (
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{t('providers.hve.server_secret')}</div>
-          )}
-          <input
-            className="form-input"
-            type="password"
-            value={value.client_secret}
-            autoComplete="new-password"
-            onChange={e => set({ client_secret: e.target.value })}
-          />
-        </div>
-      )}
-
-      {value.credential === 'certificate' && (
-        <>
+      <>
           {keepHint && (
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>{t('providers.hve.cert_keep')}</div>
           )}
@@ -174,8 +138,7 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
               onChange={e => set({ private_key_pem: e.target.value })}
             />
           </div>
-        </>
-      )}
+      </>
 
       <div className="form-group">
         <label className="form-label">{t('providers.hve.mode')}</label>
@@ -193,23 +156,11 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
           </div>
         )}
       </div>
-
-      {value.oauth_mode !== 'application' && cfg?.redirect_uri && (
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-          <div>{t('providers.hve.redirect_uri')}</div>
-          <code style={{ wordBreak: 'break-all' }}>{cfg.redirect_uri}</code>
-        </div>
-      )}
-      {value.oauth_mode !== 'application' && (
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-          {t('providers.hve.public_client_hint')}
-        </div>
-      )}
     </div>
   );
 }
 
-export function HveSignIn({ provider, onChanged, beforeSignIn }) {
+export function HveSignIn({ provider, onChanged, beforeSignIn, showEdit = true }) {
   const { t } = useTranslation();
   const [pending, setPending] = useState(null);
   const [error, setError] = useState('');
@@ -221,7 +172,7 @@ export function HveSignIn({ provider, onChanged, beforeSignIn }) {
     ...emptyHveForm(),
     tenant_id: provider.oauth_tenant_id || '',
     client_id: provider.oauth_client_id || '',
-    credential: provider.oauth_credential || 'public',
+    credential: 'certificate',
     oauth_mode: provider.oauth_mode || 'delegated',
   }));
   const poller = useRef(null);
@@ -302,18 +253,6 @@ export function HveSignIn({ provider, onChanged, beforeSignIn }) {
     const data = await res.json();
     setPending(data);
     schedule(data.interval || 5);
-  };
-
-  const startBrowser = async () => {
-    setError('');
-    if (!(await prepare())) return;
-    const res = await apiFetch(`/api/providers/${provider.id}/hve/redirect`, { method: 'POST', body: {} });
-    if (!res.ok) {
-      setError(await readError(res));
-      return;
-    }
-    const data = await res.json();
-    window.location.href = data.authorize_url;
   };
 
   const signOut = async () => {
@@ -401,19 +340,26 @@ export function HveSignIn({ provider, onChanged, beforeSignIn }) {
 
       {error && <div className="alert alert-error" style={{ marginBottom: 8 }}>{error}</div>}
 
+      {provider.oauth_mode !== 'application' && !provider.oauth_signed_in && (
+        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>
+          {t('providers.hve.public_client_hint')}
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {provider.oauth_mode !== 'application' && (
           <>
-            <button type="button" className="btn btn-primary btn-sm" onClick={startDevice}>{t('providers.hve.signin_code')}</button>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={startBrowser}>{t('providers.hve.signin_browser')}</button>
+            <button type="button" className="btn btn-primary" onClick={startDevice}>{t('providers.hve.signin_code')}</button>
             {provider.oauth_signed_in && (
               <button type="button" className="btn btn-secondary btn-sm" onClick={signOut}>{t('providers.hve.signout')}</button>
             )}
           </>
         )}
-        <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditing(open => !open)}>
-          {t('providers.hve.edit_app')}
-        </button>
+        {showEdit && (
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditing(open => !open)}>
+            {t('providers.hve.edit_app')}
+          </button>
+        )}
       </div>
 
       {editing && (

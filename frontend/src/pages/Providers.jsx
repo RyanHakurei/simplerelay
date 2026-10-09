@@ -25,6 +25,8 @@ export default function Providers() {
   const [showPassword, setShowPassword] = useState({});
   const [hveChosen, setHveChosen] = useState(false);
   const [hveForm, setHveForm] = useState(emptyHveForm);
+  const [hveStage, setHveStage] = useState('setup');
+  const [createdHve, setCreatedHve] = useState(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const hveNotice = searchParams.get('hve');
   const hveMessage = searchParams.get('message');
@@ -146,12 +148,43 @@ export default function Providers() {
       alert(await readError(res));
       return;
     }
+    const created = await res.json();
+    if (isHve) {
+      setCreatedHve(created);
+      setHveStage('signin');
+      loadProviders();
+      return;
+    }
+    closeAdd();
+    loadProviders();
+  };
+
+  const closeAdd = () => {
     setShowAdd(false);
     setSelectedPreset(null);
     setDetected(null);
     setHveChosen(false);
     setHveForm(emptyHveForm());
+    setHveStage('setup');
+    setCreatedHve(null);
     setForm({ email: '', host: '', port: 587, user: '', password: '', tls: 'starttls' });
+  };
+
+  const continueHveSetup = async () => {
+    if (!createdHve) {
+      await addProvider();
+      return;
+    }
+    const res = await apiFetch(`/api/providers/${createdHve.id}/hve`, {
+      method: 'PATCH',
+      body: hvePayload(hveForm),
+    });
+    if (!res.ok) {
+      alert(await readError(res));
+      return;
+    }
+    setCreatedHve(await res.json());
+    setHveStage('signin');
     loadProviders();
   };
 
@@ -310,8 +343,45 @@ export default function Providers() {
         </div>
       )}
 
-      {showAdd && (
+      {showAdd && selectedPreset === 'microsoft_hve' && hveStage === 'signin' && createdHve && (
         <div className="card">
+          <h2 className="card-title" style={{ marginBottom: 8 }}>{t('providers.hve.signin_title')}</h2>
+          {createdHve.oauth_mode === 'application' ? (
+            <div className="alert alert-success">{t('providers.hve.app_mode')}</div>
+          ) : (
+            <>
+              <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 14 }}>{t('providers.hve.signin_intro', { email: createdHve.email })}</p>
+              <HveSignIn
+                provider={createdHve}
+                showEdit={false}
+                onChanged={(signedIn) => {
+                  setCreatedHve(current => ({ ...current, oauth_signed_in: !!signedIn }));
+                  loadProviders();
+                }}
+              />
+            </>
+          )}
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="btn btn-secondary" onClick={() => setHveStage('setup')}>{t('common.back')}</button>
+            <button
+              className="btn btn-primary"
+              onClick={closeAdd}
+              disabled={createdHve.oauth_mode !== 'application' && !createdHve.oauth_signed_in}
+            >
+              {t('common.next')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showAdd && !(selectedPreset === 'microsoft_hve' && hveStage === 'signin' && createdHve) && (
+        <div className="card">
+          {selectedPreset === 'microsoft_hve' && (
+            <>
+              <h2 className="card-title" style={{ marginBottom: 8 }}>{t('providers.hve.app_title')}</h2>
+              <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 14 }}>{t('providers.hve.app_intro')}</p>
+            </>
+          )}
           <div className="form-group">
             <label className="form-label">Email</label>
             <input
@@ -358,6 +428,7 @@ export default function Providers() {
             </div>
           )}
 
+          {selectedPreset !== 'microsoft_hve' && (
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12 }}>
             <div className="form-group">
               <label className="form-label">{t('wizard.step2_manual_host')}</label>
@@ -376,6 +447,7 @@ export default function Providers() {
               </select>
             </div>
           </div>
+          )}
           {selectedPreset === 'microsoft_hve' ? (
             <HveFields value={hveForm} onChange={setHveForm} />
           ) : (
@@ -393,8 +465,10 @@ export default function Providers() {
             </div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-primary" onClick={addProvider}>{t('common.save')}</button>
-            <button className="btn btn-secondary" onClick={() => setShowAdd(false)}>{t('common.cancel')}</button>
+            <button className="btn btn-primary" onClick={selectedPreset === 'microsoft_hve' ? continueHveSetup : addProvider}>
+              {selectedPreset === 'microsoft_hve' ? t('common.next') : t('common.save')}
+            </button>
+            <button className="btn btn-secondary" onClick={closeAdd}>{t('common.cancel')}</button>
           </div>
         </div>
       )}
@@ -447,7 +521,7 @@ export default function Providers() {
                 </div>
               )}
 
-              {p.provider_type === 'microsoft_hve' && (
+              {p.provider_type === 'microsoft_hve' && !(showAdd && createdHve && createdHve.id === p.id) && (
                 <HveSignIn provider={p} onChanged={loadProviders} />
               )}
 

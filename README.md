@@ -77,7 +77,7 @@ Every registered user gets access to:
 
 **Providers** - manage SMTP providers (upstream accounts used for sending). Each provider has:
 - Auto-detection of SMTP settings from email address (Gmail, Outlook, Yahoo, Seznam, Zoho, SES, SendGrid, Mailgun, or custom SMTP)
-- Microsoft 365 High Volume Email (HVE) with OAuth: device-code or browser sign-in for the HVE mailbox, and certificate or client-secret auth for the Entra app
+- Microsoft 365 High Volume Email (HVE) with OAuth: certificate auth for the Entra app, then device-code sign-in for the HVE mailbox
 - App password guidance for providers that require it (Gmail, Outlook, Yahoo) with direct links
 - SMTP connection test
 - DNS validation (SPF, DKIM, DMARC) with provider-aware DKIM selector scanning
@@ -125,17 +125,16 @@ HVE accounts send through `smtp.hve.mx.microsoft:587` with XOAUTH2. SimpleRelay 
 You already need an app registration in the same Entra tenant as the HVE mailbox.
 
 1. API permission: Office 365 Exchange Online → **Mail.Send**. Delegated for mailbox sign-in, or Application if the app sends on its own. Grant admin consent.
-2. Credential: a client secret, or a certificate under Certificates & secrets. Paste the certificate and its unencrypted private key into SimpleRelay, or point `RELAY_HVE_CERT_FILE` and `RELAY_HVE_KEY_FILE` at them. SimpleRelay signs the token request with that key when the app requires a certificate.
-3. Device sign-in needs **Allow public client flows** on the app. Browser sign-in needs this redirect URI, built from `RELAY_BASE_URL`:
-   `https://relay.example.com:8080/api/providers/hve/callback`
-4. In the dashboard, add a provider and tick **High Volume Email**. Enter the tenant ID and client ID, then **Sign in with a code**. Open the Microsoft page and sign in as the HVE mailbox, not as your admin user.
+2. Credential: a certificate under Certificates & secrets. Paste the certificate and its unencrypted private key into SimpleRelay, or point `RELAY_HVE_CERT_FILE` and `RELAY_HVE_KEY_FILE` at them. SimpleRelay signs the token request with that key.
+3. Device-code sign-in needs **Allow public client flows** on the app.
+4. In the dashboard, add a provider and tick **High Volume Email**. The first page is the Entra application (tenant ID, client ID, certificate). The next page is mailbox sign-in. Choose **Sign in with a code**, open the Microsoft page, and sign in as the HVE mailbox, not as your admin user.
 5. Application permission skips mailbox sign-in. Allow the app on that mailbox in Exchange Online PowerShell. The id is the enterprise application object ID:
 
 ```powershell
 Add-HVEAppAccess -Identity hve@yourdomain.com -AppIds <enterprise-app-object-id>
 ```
 
-HVE delivers to recipients inside the tenant. Put the certificate files under `./data/relay` (mounted at `/data`) if you set the env paths. The saved provider stores its own encrypted copy, so leave the secret and certificate blank when editing to keep them. If `RELAY_SECRET_KEY` changes, enter the certificate or secret again and sign the mailbox in again.
+HVE delivers to recipients inside the tenant. Put the certificate files under `./data/relay` (mounted at `/data`) if you set the env paths. The saved provider stores its own encrypted copy, so leave the certificate blank when editing to keep it. If `RELAY_SECRET_KEY` changes, enter the certificate again and sign the mailbox in again.
 
 ## Home Network / Homelab Use Case
 

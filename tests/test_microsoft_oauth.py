@@ -229,6 +229,10 @@ class ResolveTests(unittest.TestCase):
         with self.assertRaises(MicrosoftOAuthError):
             resolve_hve_on_create(TENANT, CLIENT, "public", "application", None, None, None)
 
+    def test_client_secret_is_rejected(self):
+        with self.assertRaises(MicrosoftOAuthError):
+            resolve_hve_on_create(TENANT, CLIENT, "secret", "delegated", "secret-value", None, None)
+
     def test_certificate_is_stored_encrypted(self):
         cert_pem, key_pem, _ = _cert_and_key()
         saved = resolve_hve_on_create(

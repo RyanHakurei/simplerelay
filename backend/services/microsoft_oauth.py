@@ -556,47 +556,29 @@ def resolve_hve_on_create(
     server = server_hve_config()
     tenant = _guid(tenant_id or server["tenant_id"], "Directory (tenant) ID")
     client = _guid(client_id or server["client_id"], "Application (client) ID")
-    credential = (oauth_credential or server["credential"] or "public").strip().lower()
+    requested = (oauth_credential or "certificate").strip().lower()
+    if requested != "certificate":
+        raise MicrosoftOAuthError("HVE uses a certificate for the Entra application.")
     mode = (oauth_mode or "delegated").strip().lower()
-    if credential not in ("public", "secret", "certificate"):
-        raise MicrosoftOAuthError("App credential must be public, secret, or certificate.")
     if mode not in ("delegated", "application"):
         raise MicrosoftOAuthError("Authentication mode must be delegated or application.")
-    if mode == "application" and credential == "public":
-        raise MicrosoftOAuthError(
-            "Application permission needs a client secret or a certificate. Public clients cannot use client credentials."
-        )
 
-    secret = (client_secret or "").strip()
     cert = (certificate_pem or "").strip()
     key = (private_key_pem or "").strip()
-    secret_enc = cert_enc = key_enc = None
-
-    if credential == "secret":
-        if not secret:
-            secret = (settings.hve_client_secret or "").strip()
-        if not secret:
-            raise MicrosoftOAuthError("Paste the Entra client secret, or set RELAY_HVE_CLIENT_SECRET on the server.")
-        if len(secret) > 2000:
-            raise MicrosoftOAuthError("Client secret is too long.")
-        secret_enc = encrypt_password(secret)
-    elif credential == "certificate":
-        if not cert and not key:
-            cert, key = _read_server_cert()
-        else:
-            cert, key = validate_certificate(cert, key)
-        cert_enc = encrypt_password(cert)
-        key_enc = encrypt_password(key)
+    if not cert and not key:
+        cert, key = _read_server_cert()
+    else:
+        cert, key = validate_certificate(cert, key)
 
     return {
         "oauth_tenant_id": tenant,
         "oauth_client_id": client,
-        "oauth_credential": credential,
+        "oauth_credential": "certificate",
         "oauth_mode": mode,
         "oauth_status": STATUS_APP if mode == "application" else STATUS_NEEDS_SIGNIN,
-        "oauth_client_secret_encrypted": secret_enc,
-        "oauth_cert_pem_encrypted": cert_enc,
-        "oauth_key_pem_encrypted": key_enc,
+        "oauth_client_secret_encrypted": None,
+        "oauth_cert_pem_encrypted": encrypt_password(cert),
+        "oauth_key_pem_encrypted": encrypt_password(key),
     }
 
 
@@ -608,60 +590,45 @@ def apply_hve_update(provider, payload: dict) -> bool:
     """
     tenant = _guid(payload.get("tenant_id") or provider.oauth_tenant_id, "Directory (tenant) ID")
     client = _guid(payload.get("client_id") or provider.oauth_client_id, "Application (client) ID")
-    credential = (payload.get("oauth_credential") or provider.oauth_credential or "public").strip().lower()
+    requested = (payload.get("oauth_credential") or "certificate").strip().lower()
+    if requested != "certificate":
+        raise MicrosoftOAuthError("HVE uses a certificate for the Entra application.")
+    credential = "certificate"
     mode = (payload.get("oauth_mode") or provider.oauth_mode or "delegated").strip().lower()
-    if credential not in ("public", "secret", "certificate"):
-        raise MicrosoftOAuthError("App credential must be public, secret, or certificate.")
     if mode not in ("delegated", "application"):
         raise MicrosoftOAuthError("Authentication mode must be delegated or application.")
-    if mode == "application" and credential == "public":
-        raise MicrosoftOAuthError(
-            "Application permission needs a client secret or a certificate."
-        )
 
-    new_secret = (payload.get("client_secret") or "").strip()
     new_cert = (payload.get("certificate_pem") or "").strip()
     new_key = (payload.get("private_key_pem") or "").strip()
-    replaced_secret = False
     replaced_cert = False
 
-    if credential == "secret":
-        if new_secret:
-            if len(new_secret) > 2000:
-                raise MicrosoftOAuthError("Client secret is too long.")
-            provider.oauth_client_secret_encrypted = encrypt_password(new_secret)
-            replaced_secret = True
-        elif not provider.oauth_client_secret_encrypted:
-            fallback = (settings.hve_client_secret or "").strip()
-            if not fallback:
-                raise MicrosoftOAuthError("Paste the Entra client secret, or set RELAY_HVE_CLIENT_SECRET on the server.")
-            provider.oauth_client_secret_encrypted = encrypt_password(fallback)
-            replaced_secret = True
-        provider.oauth_cert_pem_encrypted = None
-        provider.oauth_key_pem_encrypted = None
-    elif credential == "certificate":
-        if new_cert or new_key:
-            cert, key = validate_certificate(new_cert, new_key)
+    if new_cert or new_key:
+        cert, key = validate_certificate(new_cert, new_key)
+        same = False
+        if provider.oauth_cert_pem_encrypted and provider.oauth_key_pem_encrypted:
+            try:
+                same = (
+                    decrypt_password(provider.oauth_cert_pem_encrypted) == cert
+                    and decrypt_password(provider.oauth_key_pem_encrypted) == key
+                )
+            except Exception:
+                same = False
+        if not same:
             provider.oauth_cert_pem_encrypted = encrypt_password(cert)
             provider.oauth_key_pem_encrypted = encrypt_password(key)
             replaced_cert = True
-        elif not provider.oauth_cert_pem_encrypted or not provider.oauth_key_pem_encrypted:
-            cert, key = _read_server_cert()
-            provider.oauth_cert_pem_encrypted = encrypt_password(cert)
-            provider.oauth_key_pem_encrypted = encrypt_password(key)
-            replaced_cert = True
-        provider.oauth_client_secret_encrypted = None
-    else:
-        provider.oauth_client_secret_encrypted = None
-        provider.oauth_cert_pem_encrypted = None
-        provider.oauth_key_pem_encrypted = None
+    elif not provider.oauth_cert_pem_encrypted or not provider.oauth_key_pem_encrypted:
+        cert, key = _read_server_cert()
+        provider.oauth_cert_pem_encrypted = encrypt_password(cert)
+        provider.oauth_key_pem_encrypted = encrypt_password(key)
+        replaced_cert = True
+    provider.oauth_client_secret_encrypted = None
 
     changed = (
         tenant != (provider.oauth_tenant_id or "")
         or client != (provider.oauth_client_id or "")
         or credential != (provider.oauth_credential or "")
         or mode != (provider.oauth_mode or "")
-        or replaced_secret
         or replaced_cert
     )
     provider.oauth_tenant_id = tenant
