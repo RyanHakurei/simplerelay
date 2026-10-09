@@ -35,8 +35,7 @@ export default function Providers() {
   const [providerClients, setProviderClients] = useState({});
   const [addingClientFor, setAddingClientFor] = useState(null);
   const [newCreds, setNewCreds] = useState(null);
-  const [editingClient, setEditingClient] = useState(null);
-  const [editForm, setEditForm] = useState({});
+
   const detectTimer = useRef(null);
 
   const loadProviders = () => {
@@ -280,28 +279,6 @@ export default function Providers() {
 
   const toggleClient = async (clientId, providerId) => {
     await apiFetch(`/api/clients/${clientId}/toggle`, { method: 'PATCH' });
-    loadClientsFor(providerId);
-  };
-
-  const startEdit = (client) => {
-    setEditingClient(client.id);
-    setEditForm({
-      name: client.name,
-      ip_cidr: client.ip_cidr || client.ip_address || '',
-    });
-  };
-
-  const saveEdit = async (clientId, providerId) => {
-    await apiFetch(`/api/clients/${clientId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: editForm.name,
-        ip_cidr: editForm.ip_cidr || undefined,
-        ip_address: editForm.ip_cidr || undefined,
-      }),
-    });
-    setEditingClient(null);
     loadClientsFor(providerId);
   };
 
@@ -582,7 +559,6 @@ export default function Providers() {
                       <div className="alert alert-success" style={{ marginBottom: 8 }}>
                         <div style={{ marginBottom: 4 }}><strong>{t('wizard.step4_auth_username')}:</strong> {newCreds.smtp_username}</div>
                         <div><strong>{t('wizard.step4_auth_password')}:</strong> <code>{newCreds.smtp_password_plain}</code></div>
-                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{t('clients.save_credentials')}</div>
                       </div>
                     )}
                     <div style={{ display: 'flex', gap: 8 }}>
@@ -603,62 +579,43 @@ export default function Providers() {
                         opacity: c.is_active ? 1 : 0.5,
                         marginBottom: 4,
                       }}>
-                        {editingClient === c.id ? (
-                          /* Edit mode */
-                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1 }}>
-                            <input
-                              className="form-input"
-                              value={editForm.name}
-                              onChange={e => setEditForm({ ...editForm, name: e.target.value })}
-                              style={{ flex: 1, padding: '4px 8px', fontSize: 13 }}
-                            />
-                            <button className="btn btn-primary btn-sm" onClick={() => saveEdit(c.id, p.id)} style={{ padding: '2px 10px' }}>{t('common.save')}</button>
-                            <button className="btn btn-secondary btn-sm" onClick={() => setEditingClient(null)} style={{ padding: '2px 10px' }}>{t('common.cancel')}</button>
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontWeight: 500, fontFamily: 'monospace' }}>
+                              {c.client_type === 'smtp_auth' ? (
+                                <>
+                                  <span style={{ marginRight: 8 }}>{c.smtp_username}</span>
+                                  {c.smtp_password_plain ? (
+                                    <>
+                                      {showPassword[c.id] ? c.smtp_password_plain : '••••••••••••'}
+                                      <button
+                                        onClick={() => setShowPassword(prev => ({ ...prev, [c.id]: !prev[c.id] }))}
+                                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px', fontSize: 16, color: '#ffffff' }}
+                                        title={showPassword[c.id] ? 'Hide' : 'Show'}
+                                      >
+                                        {showPassword[c.id] ? '🙈' : '👁'}
+                                      </button>
+                                    </>
+                                  ) : '***'}
+                                </>
+                              ) : (c.ip_cidr || c.ip_address)}
+                            </span>
                           </div>
-                        ) : (
-                          /* View mode */
-                          <>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <span className="badge badge-muted" style={{ fontSize: 11 }}>
-                                {c.client_type === 'ip' ? 'IP' : 'AUTH'}
-                              </span>
-                              <span style={{ fontWeight: 500, fontFamily: 'monospace' }}>
-                                {c.client_type === 'smtp_auth' ? (
-                                  <>
-                                    <span style={{ marginRight: 8 }}>{c.smtp_username}</span>
-                                    {c.smtp_password_plain ? (
-                                      <>
-                                        {showPassword[c.id] ? c.smtp_password_plain : '••••••••••••'}
-                                        <button
-                                          onClick={() => setShowPassword(prev => ({ ...prev, [c.id]: !prev[c.id] }))}
-                                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px', fontSize: 16, color: '#ffffff' }}
-                                          title={showPassword[c.id] ? 'Hide' : 'Show'}
-                                        >
-                                          {showPassword[c.id] ? '🙈' : '👁'}
-                                        </button>
-                                      </>
-                                    ) : '***'}
-                                  </>
-                                ) : (c.ip_cidr || c.ip_address)}
-                              </span>
-                            </div>
-                            <div style={{ display: 'flex', gap: 4 }}>
-                              <button
-                                className={`badge ${c.is_active ? 'badge-success' : 'badge-error'}`}
-                                style={{ cursor: 'pointer', border: 'none', fontSize: 11 }}
-                                onClick={() => toggleClient(c.id, p.id)}
-                                title={c.is_active ? t('common.enabled') : t('common.disabled')}
-                              >
-                                {c.is_active ? '✓' : '✗'}
-                              </button>
-                              <button className="btn btn-secondary btn-sm" onClick={() => startEdit(c)} style={{ padding: '2px 8px', fontSize: 11 }}>{t('common.edit')}</button>
-                              {c.client_type === 'smtp_auth' && (
-                                <button className="btn btn-secondary btn-sm" onClick={() => regeneratePassword(c.id, p.id)} style={{ padding: '2px 8px', fontSize: 11 }}>🔑</button>
-                              )}
-                              <button className="btn btn-danger btn-sm" onClick={() => deleteClient(c.id, p.id)} style={{ padding: '2px 8px', fontSize: 11 }}>✗</button>
-                            </div>
-                          </>
-                        )}
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button
+                              className={`badge ${c.is_active ? 'badge-success' : 'badge-error'}`}
+                              style={{ cursor: 'pointer', border: 'none', fontSize: 11 }}
+                              onClick={() => toggleClient(c.id, p.id)}
+                              title={c.is_active ? t('common.enabled') : t('common.disabled')}
+                            >
+                              {c.is_active ? '✓' : '✗'}
+                            </button>
+                            {c.client_type === 'smtp_auth' && (
+                              <button className="btn btn-secondary btn-sm" onClick={() => regeneratePassword(c.id, p.id)} style={{ padding: '2px 8px', fontSize: 11 }}>{t('clients.regenerate')}</button>
+                            )}
+                            <button className="btn btn-danger btn-sm" onClick={() => deleteClient(c.id, p.id)} style={{ padding: '2px 8px', fontSize: 11 }}>✗</button>
+                          </div>
+                        </>
                       </div>
                     ))}
                   </div>
@@ -678,7 +635,6 @@ export default function Providers() {
                   <div className="alert alert-success" style={{ marginTop: 8 }}>
                     <div style={{ marginBottom: 4 }}><strong>{t('wizard.step4_auth_username')}:</strong> {newCreds.smtp_username}</div>
                     <div><strong>{t('wizard.step4_auth_password')}:</strong> <code>{newCreds.smtp_password_plain}</code></div>
-                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{t('clients.save_credentials')}</div>
                   </div>
                 )}
               </div>

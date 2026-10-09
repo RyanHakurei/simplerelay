@@ -162,7 +162,7 @@
     "provider": "Poskytovatel",
     "provider_none": "- Všichni poskytovatelé -",
     "no_clients_provider": "Žádné SMTP přihlášení. Pošta zvenčí pro tento účet se odmítá.",
-    "save_credentials": "Uložte si přihlašovací údaje - heslo se znovu nezobrazí.",
+    "save_credentials": "Heslo zůstane u účtu. Oko ho znovu zobrazí.",
     "access_required": "Je potřeba SMTP uživatel a heslo. Bez nich klienti zvenčí nemohou odesílat.",
     "smtp_required": "Vyžadováno SMTP přihlášení",
     "regenerate": "Přegenerovat heslo",

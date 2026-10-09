@@ -162,7 +162,7 @@
     "provider": "Anbieter",
     "provider_none": "- Alle Anbieter -",
     "no_clients_provider": "Keine SMTP-Anmeldung. Externe Post für dieses Konto wird abgelehnt.",
-    "save_credentials": "Speichern Sie die Zugangsdaten jetzt - das Passwort wird nicht erneut angezeigt.",
+    "save_credentials": "Das Passwort bleibt am Konto gespeichert. Das Auge zeigt es wieder an.",
     "access_required": "SMTP-Benutzername und Passwort sind erforderlich. Ohne sie können externe Clients nicht senden.",
     "smtp_required": "SMTP-Anmeldung erforderlich",
     "regenerate": "Passwort neu generieren",

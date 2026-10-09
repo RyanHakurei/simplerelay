@@ -161,7 +161,7 @@
     "provider": "Proveedor",
     "provider_none": "- Todos los proveedores -",
     "no_clients_provider": "Sin inicio de sesión SMTP. El correo externo de esta cuenta se rechaza.",
-    "save_credentials": "Guarda las credenciales ahora - la contraseña no se mostrará de nuevo.",
+    "save_credentials": "La contraseña se queda en la cuenta. El ojo la vuelve a mostrar.",
     "access_required": "Hacen falta un usuario y una contraseña SMTP. Sin ellos, los clientes externos no pueden enviar.",
     "smtp_required": "Inicio de sesión SMTP obligatorio",
     "regenerate": "Regenerar contraseña",

@@ -162,7 +162,7 @@
     "provider": "Provider",
     "provider_none": "- All providers -",
     "no_clients_provider": "No SMTP login. Outside mail for this account is rejected.",
-    "save_credentials": "Save these credentials now - the password won't be shown again.",
+    "save_credentials": "This password stays on the account. The eye shows it again.",
     "access_required": "An SMTP username and password are required. Without them, outside clients cannot send.",
     "smtp_required": "SMTP login required",
     "regenerate": "Regenerate password",
