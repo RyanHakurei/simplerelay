@@ -4,7 +4,7 @@ SimpleRelay pipe transport — stealth outbound email via SOCKS5 proxy.
 
 Called by Postfix pipe daemon for each outbound email:
   stdin  = raw email message
-  argv   = sender recipient
+  argv   = sender recipient client_address sasl_username
 
 Mimics a normal email client:
   - EHLO with [proxy_ip] (not relay domain)
@@ -23,7 +23,6 @@ import os
 import re
 import uuid
 import socket
-import ipaddress
 import smtplib
 import ssl
 import logging
@@ -37,6 +36,7 @@ sys.path.insert(0, "/app")
 
 from backend.config import settings
 from backend.services.crypto import decrypt_password
+from backend.services.smtp_access import client_can_send
 from backend.services.microsoft_oauth import (
     MicrosoftOAuthError,
     encrypt_token_updates,
@@ -221,41 +221,25 @@ def _get_global_daily_limit(conn, provider_type):
         return None
 
 
-def check_client_authorized(conn, client_ip, provider):
-    """Check if client IP is authorized to send via this provider.
+def check_sasl_authorized(conn, sasl_username, provider):
+    """True when this SMTP login may send through this provider.
 
-    IP must be explicitly assigned to this provider in allowed_clients.
-    No global/wildcard — every IP-provider pair must be explicitly configured.
-
-    Returns True if authorized, False otherwise.
+    Any IP is allowed. The login has to be an active smtp_auth client for
+    the provider (or a user-wide login for that provider's owner).
     """
-    try:
-        client_addr = ipaddress.ip_address(client_ip)
-    except ValueError:
-        return False
-
-    provider_id = provider.get("id")
-
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT ip_address, ip_cidr
+            SELECT smtp_username, provider_id, user_id
             FROM allowed_clients
-            WHERE client_type = 'ip'
+            WHERE client_type = 'smtp_auth'
               AND is_active = true
-              AND provider_id = %s
-        """, (provider_id,))
-
-        for row in cur.fetchall():
-            cidr = row.get("ip_cidr") or row.get("ip_address")
-            if not cidr:
-                continue
-            try:
-                if client_addr in ipaddress.ip_network(cidr.strip(), strict=False):
-                    return True
-            except ValueError:
-                continue
-
-    return False
+              AND (
+                    provider_id = %s
+                    OR (provider_id IS NULL AND user_id = %s)
+              )
+        """, (provider.get("id"), provider.get("user_id")))
+        clients = cur.fetchall()
+    return client_can_send(sasl_username, settings.hostname, provider, clients)
 
 
 def log_to_db(conn, sender, recipient, provider_name, status,
@@ -614,12 +598,13 @@ def send_via_provider(provider, proxy_row, raw_message, sender, recipient, envel
 
 def main():
     if len(sys.argv) < 3:
-        log.error("Usage: pipe_transport.py <sender> <recipient> [client_address]")
+        log.error("Usage: pipe_transport.py <sender> <recipient> [client_address] [sasl_username]")
         sys.exit(EX_TEMPFAIL)
 
     sender = sys.argv[1]
     recipient = sys.argv[2]
     client_address = sys.argv[3] if len(sys.argv) > 3 else "127.0.0.1"
+    sasl_username = sys.argv[4] if len(sys.argv) > 4 else ""
     sender_domain = sender.split("@")[-1] if "@" in sender else "localhost"
 
     log.info(f"Processing: {sender} → {recipient} (client={client_address})")
@@ -640,12 +625,24 @@ def main():
             log.error(f"No active provider for sender: {sender}")
             sys.exit(EX_UNAVAILABLE)
 
-        # Per-provider IP authorization (skip for localhost — internal test endpoint)
+        # SMTP login required from outside localhost. The dashboard test
+        # injects mail from 127.0.0.1 and does not authenticate.
         if client_address not in ("127.0.0.1", "::1"):
-            if not check_client_authorized(conn, client_address, provider):
-                log.error(f"REJECTED: {client_address} not authorized for provider {sender}")
+            if not check_sasl_authorized(conn, sasl_username, provider):
+                if (sasl_username or "").strip():
+                    reason = f"SMTP login is not allowed for {sender}"
+                else:
+                    reason = "SMTP authentication required"
+                log.error(f"REJECTED: {reason} (client={client_address})")
+                log_to_db(
+                    conn, sender, recipient, provider["smtp_host"], "failed",
+                    error=reason,
+                    user_id=provider.get("user_id"),
+                    provider_id=provider.get("id"),
+                    client_ip=client_address,
+                )
                 sys.exit(EX_UNAVAILABLE)
-            log.info(f"Authorized: {client_address} → {sender}")
+            log.info(f"Authorized: {sasl_username} → {sender}")
 
         # Look up all available proxies (failover list)
         proxies = lookup_proxies(

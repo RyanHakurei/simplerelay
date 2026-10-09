@@ -21,16 +21,9 @@ def generate_main_cf(db: Session, relay_port: int = 2525) -> str:
         Provider.status != ProviderStatus.DISABLED
     ).all()
 
-    clients = db.query(AllowedClient).filter(
-        AllowedClient.is_active == True
-    ).all()
-
-    # Build mynetworks — ONLY localhost (internal pipe transport communication).
-    # IP whitelist is handled by access_server.py via TCP lookup (real-time, no reload).
+    # Localhost only. Outside clients are allowed from any IP, and the policy
+    # server requires an SMTP login for the envelope sender.
     mynetworks = ["127.0.0.0/8"]
-
-    has_smtp_auth_clients = any(c.client_type == "smtp_auth" for c in clients)
-    has_ip_clients = any(c.client_type == "ip" for c in clients)
 
     # Determine default relayhost
     default_provider = next((p for p in providers if p.is_default), None)
@@ -66,17 +59,12 @@ mydomain = {postfix_domain}
 myorigin = $mydomain
 mydestination =
 
-# Relay restrictions — policy server checks IP+sender at RCPT TO time
+# Relay restrictions — localhost, then SMTP login bound to the sender.
+# Unauthenticated clients are rejected. This is not an open relay.
 mynetworks = {" ".join(mynetworks)}
-smtpd_relay_restrictions = permit_mynetworks"""
-
-    if has_smtp_auth_clients:
-        config += """\n    permit_sasl_authenticated"""
-
-    # Policy server checks IP+sender authorization in real-time from DB
-    config += """\n    check_policy_service inet:127.0.0.1:9199"""
-
-    config += """\n    reject"""
+smtpd_relay_restrictions = permit_mynetworks
+    check_policy_service inet:127.0.0.1:9199
+    reject"""
 
     # Stealth pipe transport — all outbound goes through Python → SOCKS5 → provider
     config += """
@@ -115,9 +103,9 @@ smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
 smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
 smtp_tls_loglevel = 1"""
 
-    # SASL server (for client auth)
-    if has_smtp_auth_clients:
-        config += f"""
+    # SASL server. Always on, so a client can log in from any address.
+    # With no smtp_auth rows, sasldb is empty and every login fails.
+    config += f"""
 
 # SASL server for client authentication
 smtpd_sasl_auth_enable = yes
@@ -139,8 +127,8 @@ message_size_limit = 52428800
 mailbox_size_limit = 0
 
 # Pass environment variables to pipe transports (pipe_transport.py needs DB access)
-import_environment = RELAY_DATABASE_URL RELAY_FERNET_KEY RELAY_PUBLIC_IP TZ
-export_environment = RELAY_DATABASE_URL RELAY_FERNET_KEY RELAY_PUBLIC_IP TZ
+import_environment = RELAY_DATABASE_URL RELAY_FERNET_KEY RELAY_PUBLIC_IP RELAY_HOSTNAME TZ
+export_environment = RELAY_DATABASE_URL RELAY_FERNET_KEY RELAY_PUBLIC_IP RELAY_HOSTNAME TZ
 """
 
     return config

@@ -26,7 +26,7 @@ showq     unix  n       -       y       -       -       showq
 #
 # SmartRelay stealth pipe transport — Python sends via SOCKS5 proxy
 simplerelay-pipe unix - n n - 10 pipe
-        flags=R user=nobody argv=/usr/local/bin/python3 /app/backend/services/pipe_transport.py ${sender} ${recipient} ${client_address}
+        flags=R user=nobody argv=/usr/local/bin/python3 /app/backend/services/pipe_transport.py ${sender} ${recipient} ${client_address} ${sasl_username}
 #
 error     unix  -       -       y       -       -       error
 retry     unix  -       -       y       -       -       error

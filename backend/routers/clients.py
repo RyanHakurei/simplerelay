@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/clients", tags=["clients"])
 
 class ClientCreate(BaseModel):
     name: str
-    client_type: str  # ip, smtp_auth
+    client_type: str  # smtp_auth
     provider_id: int | None = None
     ip_address: str | None = None
     ip_cidr: str | None = None
@@ -80,18 +80,14 @@ def create_client(data: ClientCreate, db: Session = Depends(get_db), user: User 
 
     plain_password = None
 
-    if data.client_type == "ip":
-        if not data.ip_address and not data.ip_cidr:
-            raise HTTPException(400, "IP address or CIDR required")
-        client.ip_address = data.ip_address
-        client.ip_cidr = data.ip_cidr or data.ip_address
+    if data.client_type != "smtp_auth":
+        raise HTTPException(400, "Only SMTP authentication is supported")
 
-    elif data.client_type == "smtp_auth":
-        username = data.name.lower().replace(" ", "_")
-        plain_password = secrets.token_urlsafe(16)
-        client.smtp_username = username
-        client.smtp_password_hash = _bcrypt.hashpw(plain_password.encode(), _bcrypt.gensalt()).decode()
-        client.smtp_password_plain = plain_password
+    username = data.name.lower().replace(" ", "_")
+    plain_password = secrets.token_urlsafe(16)
+    client.smtp_username = username
+    client.smtp_password_hash = _bcrypt.hashpw(plain_password.encode(), _bcrypt.gensalt()).decode()
+    client.smtp_password_plain = plain_password
 
     db.add(client)
     db.commit()

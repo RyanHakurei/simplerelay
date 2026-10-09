@@ -8,8 +8,6 @@ export default function Clients() {
   const [clients, setClients] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
   const [addEmail, setAddEmail] = useState('');
-  const [clientType, setClientType] = useState('ip');
-  const [ip, setIp] = useState('');
   const [newCreds, setNewCreds] = useState(null);
   const [editingClient, setEditingClient] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -29,26 +27,14 @@ export default function Clients() {
   const addClient = async () => {
     const provider = getProviderByEmail(addEmail);
     if (!provider) return;
-    if (clientType === 'ip') {
-      const ips = ip.split(/[,\n\s]+/).map(s => s.trim()).filter(Boolean);
-      for (const oneIp of ips) {
-        await apiFetch('/api/clients/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: oneIp, client_type: 'ip', provider_id: provider.id, ip_cidr: oneIp }),
-        });
-      }
-      setShowAdd(false); setIp(''); setAddEmail('');
-    } else {
-      const res = await apiFetch('/api/clients/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: addEmail, client_type: 'smtp_auth', provider_id: provider.id }),
-      });
-      const data = await res.json();
-      if (data.smtp_password_plain) setNewCreds(data);
-      else { setShowAdd(false); setAddEmail(''); }
-    }
+    const res = await apiFetch('/api/clients/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: addEmail, client_type: 'smtp_auth', provider_id: provider.id }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.smtp_password_plain) setNewCreds(data);
+    else { setShowAdd(false); setAddEmail(''); }
     loadClients();
   };
 
@@ -65,14 +51,14 @@ export default function Clients() {
 
   const startEdit = (c) => {
     setEditingClient(c.id);
-    setEditForm({ name: c.name, ip_cidr: c.ip_cidr || c.ip_address || '' });
+    setEditForm({ name: c.name });
   };
 
   const saveEdit = async (id) => {
     await apiFetch(`/api/clients/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: editForm.name, ip_cidr: editForm.ip_cidr || undefined, ip_address: editForm.ip_cidr || undefined }),
+      body: JSON.stringify({ name: editForm.name }),
     });
     setEditingClient(null);
     loadClients();
@@ -119,19 +105,6 @@ export default function Clients() {
 
           {addEmail && (
             <>
-              <div className="form-group" style={{ marginBottom: 12 }}>
-                <label className="form-label">{t('clients.type')}</label>
-                <select className="form-input" value={clientType} onChange={e => setClientType(e.target.value)}>
-                  <option value="ip">{t('clients.type_ip')}</option>
-                  <option value="smtp_auth">{t('clients.type_auth')}</option>
-                </select>
-              </div>
-              {clientType === 'ip' && (
-                <div className="form-group">
-                  <label className="form-label">{t('clients.ip_address')}</label>
-                  <textarea className="form-input" value={ip} onChange={e => setIp(e.target.value)} placeholder={t('wizard.step4_ip_placeholder_multi')} rows={3} style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: 13 }} />
-                </div>
-              )}
               {newCreds && (
                 <div className="alert alert-success" style={{ marginBottom: 16 }}>
                   <div style={{ marginBottom: 4 }}><strong>{t('wizard.step4_auth_username')}:</strong> {newCreds.smtp_username}</div>
@@ -140,7 +113,7 @@ export default function Clients() {
                 </div>
               )}
               <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-primary" onClick={addClient}>{t('common.save')}</button>
+                <button className="btn btn-primary" onClick={addClient}>{t('wizard.step4_auth_generate')}</button>
                 <button className="btn btn-secondary" onClick={() => { setShowAdd(false); setNewCreds(null); setAddEmail(''); }}>{t('common.cancel')}</button>
               </div>
             </>
@@ -163,7 +136,6 @@ export default function Clients() {
                 {editingClient === c.id ? (
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1 }}>
                     <input className="form-input" value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} style={{ flex: 1, padding: '4px 8px', fontSize: 13 }} />
-                    {c.client_type === 'ip' && <input className="form-input" value={editForm.ip_cidr} onChange={e => setEditForm({ ...editForm, ip_cidr: e.target.value })} style={{ flex: 1, padding: '4px 8px', fontSize: 13, fontFamily: 'monospace' }} />}
                     <button className="btn btn-primary btn-sm" onClick={() => saveEdit(c.id)}>{t('common.save')}</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => setEditingClient(null)}>{t('common.cancel')}</button>
                   </div>
@@ -171,7 +143,7 @@ export default function Clients() {
                   <>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span className="badge badge-muted" style={{ fontSize: 11 }}>{c.client_type === 'ip' ? 'IP' : 'AUTH'}</span>
-                      <span style={{ fontWeight: 500, fontFamily: 'monospace', fontSize: 13 }}>{c.client_type === 'ip' ? (c.ip_cidr || c.ip_address) : (c.smtp_password_plain || '***')}</span>
+                      <span style={{ fontWeight: 500, fontFamily: 'monospace', fontSize: 13 }}>{c.client_type === 'smtp_auth' ? (c.smtp_username || '***') : (c.ip_cidr || c.ip_address)}</span>
                     </div>
                     <div style={{ display: 'flex', gap: 4 }}>
                       <button className={`badge ${c.is_active ? 'badge-success' : 'badge-error'}`} style={{ cursor: 'pointer', border: 'none', fontSize: 11 }} onClick={() => toggleClient(c.id)}>{c.is_active ? t('common.enabled') : t('common.disabled')}</button>
@@ -183,6 +155,9 @@ export default function Clients() {
                 )}
               </div>
             ))}
+            {!rules.some(c => c.client_type === 'smtp_auth' && c.is_active) && (
+              <div className="alert alert-error" style={{ marginTop: 8 }}>{t('clients.no_clients_provider')}</div>
+            )}
             {newCreds && !showAdd && getProviderById(newCreds.provider_id)?.email === email && (
               <div className="alert alert-success" style={{ marginTop: 8 }}>
                 <div style={{ marginBottom: 4 }}><strong>{t('wizard.step4_auth_username')}:</strong> {newCreds.smtp_username}</div>

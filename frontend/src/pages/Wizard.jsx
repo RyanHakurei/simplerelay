@@ -17,8 +17,6 @@ export default function Wizard({ onComplete }) {
   const [credentials, setCredentials] = useState({ host: '', port: 587, user: '', password: '', tls: 'starttls' });
   const [dnsResults, setDnsResults] = useState(null);
   const [dnsLoading, setDnsLoading] = useState(false);
-  const [accessMethod, setAccessMethod] = useState('ip');
-  const [clientIp, setClientIp] = useState('');
   const [smtpCreds, setSmtpCreds] = useState(null);
   const [testResult, setTestResult] = useState(null);
   const [testLoading, setTestLoading] = useState(false);
@@ -176,27 +174,16 @@ export default function Wizard({ onComplete }) {
     setDnsLoading(false);
   };
 
-  // Step 4: Save access control
+  // Access step: one SMTP login. Any IP can connect with it.
   const saveClient = async () => {
-    if (accessMethod === 'ip' && clientIp.trim()) {
-      // Split on commas, newlines, spaces — create one client per IP
-      const ips = clientIp.split(/[,\n\s]+/).map(s => s.trim()).filter(Boolean);
-      for (const ip of ips) {
-        await apiFetch('/api/clients/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: ip, client_type: 'ip', ip_cidr: ip, provider_id: providerId }),
-        });
-      }
-    } else if (accessMethod === 'smtp_auth') {
-      const res = await apiFetch('/api/clients/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'App', client_type: 'smtp_auth', provider_id: providerId }),
-      });
-      const data = await res.json();
-      setSmtpCreds(data);
-    }
+    if (smtpCreds?.smtp_password_plain) return;
+    const res = await apiFetch('/api/clients/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'App', client_type: 'smtp_auth', provider_id: providerId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.smtp_password_plain) setSmtpCreds(data);
   };
 
   // Step 5: Send test email
@@ -511,29 +498,7 @@ export default function Wizard({ onComplete }) {
             ⚠ {t('clients.access_required')}
           </div>
 
-          <div className="form-group">
-            <label className="form-label">{t('wizard.step4_method')}</label>
-            <select className="form-input" value={accessMethod} onChange={e => setAccessMethod(e.target.value)}>
-              <option value="ip">{t('wizard.step4_ip')}</option>
-              <option value="smtp_auth">{t('wizard.step4_auth')}</option>
-            </select>
-          </div>
-
-          {accessMethod === 'ip' && (
-            <div className="form-group">
-              <label className="form-label">{t('wizard.step4_ip_add')}</label>
-              <textarea
-                className="form-input"
-                placeholder={t('wizard.step4_ip_placeholder_multi')}
-                value={clientIp}
-                onChange={e => setClientIp(e.target.value)}
-                rows={3}
-                style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: 13 }}
-              />
-            </div>
-          )}
-
-          {accessMethod === 'smtp_auth' && smtpCreds && (
+          {smtpCreds && (
             <div className="info-box">
               <div><span className="label">{t('wizard.step4_auth_username')}: </span><span className="value">{smtpCreds.smtp_username}</span></div>
               <div><span className="label">{t('wizard.step4_auth_password')}: </span><span className="value">{smtpCreds.smtp_password_plain}</span></div>
@@ -553,6 +518,12 @@ export default function Wizard({ onComplete }) {
             <div><span className="label">{t('wizard.step5_host')}: </span><span className="value">{relayInfo.hostname}</span></div>
             <div><span className="label">{t('wizard.step5_port')}: </span><span className="value">{relayInfo.port}</span></div>
             <div><span className="label">{t('wizard.step5_from')}: </span><span className="value">{email}</span></div>
+            {smtpCreds && (
+              <>
+                <div><span className="label">{t('wizard.step4_auth_username')}: </span><span className="value">{smtpCreds.smtp_username}</span></div>
+                <div><span className="label">{t('wizard.step4_auth_password')}: </span><span className="value">{smtpCreds.smtp_password_plain}</span></div>
+              </>
+            )}
           </div>
 
           <div style={{ marginBottom: 20 }}>
@@ -588,8 +559,7 @@ export default function Wizard({ onComplete }) {
             onClick={nextStep}
             disabled={
               (step === 1 && !email) ||
-              (hveFlow && step === 3 && hveForm.oauth_mode !== 'application' && !hveSignedIn) ||
-              (step === accessStep && accessMethod === 'ip' && !clientIp.trim())
+              (hveFlow && step === 3 && hveForm.oauth_mode !== 'application' && !hveSignedIn)
             }
           >
             {t('common.next')}

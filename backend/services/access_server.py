@@ -1,28 +1,26 @@
-"""Postfix SMTP policy server — real-time IP+sender authorization from DB.
+"""Postfix SMTP policy server — SMTP AUTH bound to the envelope sender.
 
 Postfix queries this server at RCPT TO time via:
   check_policy_service inet:127.0.0.1:9199
 
-At that point both client_address AND sender are known, so we can
-enforce per-provider IP restrictions at the SMTP level (reject before
-accepting the message).
+Any client IP may connect. Mail is accepted only when the SASL username
+belongs to an active SMTP login for the provider that will send that mail.
+Localhost is always allowed so the dashboard test can inject mail.
 
 Protocol: Postfix SMTPD policy (attribute=value pairs, blank line terminated)
-  Request attributes: client_address, sender, recipient, ...
+  Request attributes: client_address, sender, sasl_username, ...
   Response: action=permit | action=reject <reason>
-
-No Postfix reload needed when IPs change in the admin UI.
 """
 import socketserver
-import ipaddress
 import logging
 import sys
-import time
 
 sys.path.insert(0, "/app")
 
+from backend.config import settings
 from backend.database import SessionLocal
-from backend.models import AllowedClient, Provider
+from backend.models import AllowedClient, Provider, ProviderStatus
+from backend.services.smtp_access import client_can_send, provider_for_sender
 
 logging.basicConfig(
     stream=sys.stderr,
@@ -31,119 +29,62 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Simple cache to reduce DB queries
-_cache = {"data": [], "domain_rules": [], "expires": 0}
-CACHE_TTL = 30  # seconds
 
-
-def _load_access_rules():
-    """Load allowed client rules from DB with cache."""
-    now = time.time()
-    if now < _cache["expires"]:
-        return _cache["data"], _cache["domain_rules"]
-
+def _load_rules():
+    """Active providers and SMTP logins. Read on every check so a new login works immediately."""
     db = SessionLocal()
     try:
-        # Exact email rules (existing)
-        rows = db.query(
-            AllowedClient.ip_cidr,
-            AllowedClient.ip_address,
-            Provider.email.label("provider_email"),
-        ).join(
-            Provider, AllowedClient.provider_id == Provider.id
-        ).filter(
-            AllowedClient.client_type == "ip",
-            AllowedClient.is_active == True,
-            AllowedClient.provider_id != None,
-            Provider.domain_routing == False,
+        provider_rows = db.query(Provider).filter(
+            Provider.is_locked == False,
+            Provider.status == ProviderStatus.ACTIVE,
         ).all()
-
-        rules = []
-        for r in rows:
-            cidr = r.ip_cidr or r.ip_address
-            if not cidr:
-                continue
-            try:
-                network = ipaddress.ip_network(cidr.strip(), strict=False)
-                rules.append((network, r.provider_email.lower()))
-            except ValueError:
-                log.warning(f"Invalid CIDR in DB: {cidr}")
-
-        # Domain routing rules
-        domain_rows = db.query(
-            AllowedClient.ip_cidr,
-            AllowedClient.ip_address,
-            Provider.email.label("provider_email"),
-        ).join(
-            Provider, AllowedClient.provider_id == Provider.id
-        ).filter(
-            AllowedClient.client_type == "ip",
+        providers = [
+            {
+                "id": row.id,
+                "email": row.email,
+                "domain_routing": bool(row.domain_routing),
+                "user_id": row.user_id,
+            }
+            for row in provider_rows
+        ]
+        client_rows = db.query(AllowedClient).filter(
+            AllowedClient.client_type == "smtp_auth",
             AllowedClient.is_active == True,
-            AllowedClient.provider_id != None,
-            Provider.domain_routing == True,
         ).all()
-
-        domain_rules = []
-        for r in domain_rows:
-            cidr = r.ip_cidr or r.ip_address
-            if not cidr:
-                continue
-            try:
-                network = ipaddress.ip_network(cidr.strip(), strict=False)
-                domain = r.provider_email.lower().split("@")[-1]
-                domain_rules.append((network, domain))
-            except ValueError:
-                log.warning(f"Invalid CIDR in DB: {cidr}")
-
-        _cache["data"] = rules
-        _cache["domain_rules"] = domain_rules
-        _cache["expires"] = now + CACHE_TTL
-        return rules, domain_rules
-    except Exception as e:
-        log.error(f"DB error loading rules: {e}")
-        return _cache["data"], _cache["domain_rules"]
+        clients = [
+            {
+                "smtp_username": row.smtp_username,
+                "provider_id": row.provider_id,
+                "user_id": row.user_id,
+            }
+            for row in client_rows
+        ]
+        return providers, clients
     finally:
         db.close()
 
 
-def check_access(client_ip_str, sender):
-    """Check if client_ip is authorized to send as sender.
-    Returns (allowed: bool, reason: str).
-    """
-    if not client_ip_str or not sender:
-        return False, "missing client_address or sender"
-
-    # Always allow localhost (internal test endpoint / bounces)
+def check_access(client_ip_str, sender, sasl_username):
+    """Return (allowed, reason). A database error denies the message."""
     if client_ip_str in ("127.0.0.1", "::1"):
         return True, "localhost"
+    if not sender:
+        return False, "missing sender"
+    if not (sasl_username or "").strip():
+        return False, "SMTP authentication required"
 
     try:
-        client_ip = ipaddress.ip_address(client_ip_str)
-    except ValueError:
-        return False, f"invalid IP: {client_ip_str}"
+        providers, clients = _load_rules()
+    except Exception as e:
+        log.error(f"DB error loading SMTP logins: {e}")
+        return False, "access check failed"
 
-    sender_lower = sender.lower()
-    sender_domain = sender_lower.split("@")[-1] if "@" in sender_lower else ""
-    rules, domain_rules = _load_access_rules()
-
-    # Check if this IP+sender pair is explicitly allowed (exact email match)
-    for network, provider_email in rules:
-        if client_ip in network and sender_lower == provider_email:
-            return True, f"matched {network} → {provider_email}"
-
-    # Check domain routing rules
-    for network, domain in domain_rules:
-        if client_ip in network and sender_domain == domain:
-            return True, f"domain_routing {network} → *@{domain}"
-
-    # Check if IP exists at all (for better error message)
-    ip_known = any(client_ip in net for net, _ in rules)
-    if not ip_known:
-        ip_known = any(client_ip in net for net, _ in domain_rules)
-    if ip_known:
-        return False, f"IP {client_ip_str} not authorized for sender {sender}"
-    else:
-        return False, f"IP {client_ip_str} not in whitelist"
+    provider = provider_for_sender(sender, providers)
+    if not provider:
+        return False, f"no relay for sender {sender}"
+    if client_can_send(sasl_username, settings.hostname, provider, clients):
+        return True, f"smtp auth {sasl_username.strip().lower()}"
+    return False, "SMTP login is not allowed for this sender"
 
 
 class PolicyHandler(socketserver.StreamRequestHandler):
@@ -155,10 +96,10 @@ class PolicyHandler(socketserver.StreamRequestHandler):
             while True:
                 line = self.rfile.readline()
                 if not line:
-                    return  # connection closed
+                    return
                 line = line.decode().strip()
                 if not line:
-                    break  # end of request (blank line)
+                    break
                 if "=" in line:
                     key, _, value = line.partition("=")
                     attrs[key] = value
@@ -168,15 +109,16 @@ class PolicyHandler(socketserver.StreamRequestHandler):
 
             client_ip = attrs.get("client_address", "")
             sender = attrs.get("sender", "")
+            sasl_username = attrs.get("sasl_username", "")
 
-            allowed, reason = check_access(client_ip, sender)
+            allowed, reason = check_access(client_ip, sender, sasl_username)
 
             if allowed:
                 action = "permit"
-                log.info(f"PERMIT {client_ip} → {sender} ({reason})")
+                log.info(f"PERMIT {client_ip} sasl={sasl_username or '-'} → {sender} ({reason})")
             else:
-                action = f"reject Access denied: {reason}"
-                log.info(f"REJECT {client_ip} → {sender} ({reason})")
+                action = f"reject {reason}"
+                log.info(f"REJECT {client_ip} sasl={sasl_username or '-'} → {sender} ({reason})")
 
             self.wfile.write(f"action={action}\n\n".encode())
             self.wfile.flush()

@@ -34,7 +34,6 @@ export default function Providers() {
   // Per-provider clients
   const [providerClients, setProviderClients] = useState({});
   const [addingClientFor, setAddingClientFor] = useState(null);
-  const [clientForm, setClientForm] = useState({ client_type: 'ip', ip_cidr: '' });
   const [newCreds, setNewCreds] = useState(null);
   const [editingClient, setEditingClient] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -260,29 +259,16 @@ export default function Providers() {
   // --- Client (access control) management per provider ---
   const addClientFor = async (providerId) => {
     const providerEmail = providers.find(p => p.id === providerId)?.email || '';
-    if (clientForm.client_type === 'ip') {
-      const ips = clientForm.ip_cidr.split(/[,\n\s]+/).map(s => s.trim()).filter(Boolean);
-      for (const ip of ips) {
-        await apiFetch('/api/clients/', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: ip, client_type: 'ip', provider_id: providerId, ip_cidr: ip }),
-        });
-      }
-      setClientForm({ client_type: 'ip', ip_cidr: '' });
-      setAddingClientFor(null);
-    } else {
-      const res = await apiFetch('/api/clients/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: providerEmail, client_type: 'smtp_auth', provider_id: providerId }),
-      });
-      const data = await res.json();
-      if (data.smtp_password_plain) {
-        setNewCreds(data);
-      }
-      setClientForm({ client_type: 'ip', ip_cidr: '' });
+    const res = await apiFetch('/api/clients/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: providerEmail, client_type: 'smtp_auth', provider_id: providerId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.smtp_password_plain) {
+      setNewCreds(data);
     }
+    setAddingClientFor(null);
     loadClientsFor(providerId);
   };
 
@@ -505,7 +491,7 @@ export default function Providers() {
       ) : (
         providers.map(p => {
           const clients = providerClients[p.id] || [];
-          const hasAccess = clients.some(c => c.is_active);
+          const hasAccess = clients.some(c => c.is_active && c.client_type === 'smtp_auth');
           return (
             <div className="card" key={p.id} style={!hasAccess ? { borderLeft: '3px solid var(--color-error, #e53e3e)' } : {}}>
               {/* Provider header */}
@@ -516,7 +502,7 @@ export default function Providers() {
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   {!hasAccess && (
-                    <span className="badge badge-warning">⚠ open relay</span>
+                    <span className="badge badge-warning">⚠ {t('clients.smtp_required')}</span>
                   )}
                   <span className={`badge ${p.status === 'active' && hasAccess ? 'badge-success' : 'badge-error'}`}>
                     {hasAccess ? t(`providers.status_${p.status}`) : t('common.disabled')}
@@ -582,7 +568,6 @@ export default function Providers() {
                     onClick={() => {
                       setAddingClientFor(addingClientFor === p.id ? null : p.id);
                       setNewCreds(null);
-                      setClientForm({ client_type: 'ip', ip_cidr: '' });
                     }}
                   >
                     + {t('clients.add')}
@@ -592,26 +577,7 @@ export default function Providers() {
                 {/* Add client form */}
                 {addingClientFor === p.id && (
                   <div style={{ background: 'var(--bg-secondary)', padding: 12, borderRadius: 8, marginBottom: 8 }}>
-                    <div className="form-group" style={{ marginBottom: 8 }}>
-                      <label className="form-label" style={{ fontSize: 12 }}>{t('clients.type')}</label>
-                      <select className="form-input" value={clientForm.client_type} onChange={e => setClientForm({ ...clientForm, client_type: e.target.value })}>
-                        <option value="ip">{t('clients.type_ip')}</option>
-                        <option value="smtp_auth">{t('clients.type_auth')}</option>
-                      </select>
-                    </div>
-                    {clientForm.client_type === 'ip' && (
-                      <div className="form-group" style={{ marginBottom: 8 }}>
-                        <label className="form-label" style={{ fontSize: 12 }}>{t('clients.ip_address')}</label>
-                        <textarea
-                          className="form-input"
-                          value={clientForm.ip_cidr}
-                          onChange={e => setClientForm({ ...clientForm, ip_cidr: e.target.value })}
-                          placeholder={t('wizard.step4_ip_placeholder_multi')}
-                          rows={2}
-                          style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: 12 }}
-                        />
-                      </div>
-                    )}
+                    <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 0 }}>{t('clients.desc')}</p>
                     {newCreds && newCreds.provider_id === p.id && (
                       <div className="alert alert-success" style={{ marginBottom: 8 }}>
                         <div style={{ marginBottom: 4 }}><strong>{t('wizard.step4_auth_username')}:</strong> {newCreds.smtp_username}</div>
@@ -620,7 +586,7 @@ export default function Providers() {
                       </div>
                     )}
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <button className="btn btn-primary btn-sm" onClick={() => addClientFor(p.id)}>{t('common.save')}</button>
+                      <button className="btn btn-primary btn-sm" onClick={() => addClientFor(p.id)}>{t('wizard.step4_auth_generate')}</button>
                       <button className="btn btn-secondary btn-sm" onClick={() => { setAddingClientFor(null); setNewCreds(null); }}>{t('common.cancel')}</button>
                     </div>
                   </div>
@@ -646,14 +612,6 @@ export default function Providers() {
                               onChange={e => setEditForm({ ...editForm, name: e.target.value })}
                               style={{ flex: 1, padding: '4px 8px', fontSize: 13 }}
                             />
-                            {c.client_type === 'ip' && (
-                              <input
-                                className="form-input"
-                                value={editForm.ip_cidr}
-                                onChange={e => setEditForm({ ...editForm, ip_cidr: e.target.value })}
-                                style={{ flex: 1, padding: '4px 8px', fontSize: 13, fontFamily: 'monospace' }}
-                              />
-                            )}
                             <button className="btn btn-primary btn-sm" onClick={() => saveEdit(c.id, p.id)} style={{ padding: '2px 10px' }}>{t('common.save')}</button>
                             <button className="btn btn-secondary btn-sm" onClick={() => setEditingClient(null)} style={{ padding: '2px 10px' }}>{t('common.cancel')}</button>
                           </div>
@@ -665,20 +623,23 @@ export default function Providers() {
                                 {c.client_type === 'ip' ? 'IP' : 'AUTH'}
                               </span>
                               <span style={{ fontWeight: 500, fontFamily: 'monospace' }}>
-                                {c.client_type === 'ip' ? (c.ip_cidr || c.ip_address) : (
-                                  c.smtp_password_plain ? (
-                                    <>
-                                      {showPassword[c.id] ? c.smtp_password_plain : '••••••••••••'}
-                                      <button
-                                        onClick={() => setShowPassword(prev => ({ ...prev, [c.id]: !prev[c.id] }))}
-                                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px', fontSize: 16, color: '#ffffff' }}
-                                        title={showPassword[c.id] ? 'Hide' : 'Show'}
-                                      >
-                                        {showPassword[c.id] ? '🙈' : '👁'}
-                                      </button>
-                                    </>
-                                  ) : '***'
-                                )}
+                                {c.client_type === 'smtp_auth' ? (
+                                  <>
+                                    <span style={{ marginRight: 8 }}>{c.smtp_username}</span>
+                                    {c.smtp_password_plain ? (
+                                      <>
+                                        {showPassword[c.id] ? c.smtp_password_plain : '••••••••••••'}
+                                        <button
+                                          onClick={() => setShowPassword(prev => ({ ...prev, [c.id]: !prev[c.id] }))}
+                                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px', fontSize: 16, color: '#ffffff' }}
+                                          title={showPassword[c.id] ? 'Hide' : 'Show'}
+                                        >
+                                          {showPassword[c.id] ? '🙈' : '👁'}
+                                        </button>
+                                      </>
+                                    ) : '***'}
+                                  </>
+                                ) : (c.ip_cidr || c.ip_address)}
                               </span>
                             </div>
                             <div style={{ display: 'flex', gap: 4 }}>
@@ -702,6 +663,11 @@ export default function Providers() {
                     ))}
                   </div>
                 ) : (
+                  <div className="alert alert-error" style={{ fontSize: 13 }}>
+                    ⚠ {t('clients.no_clients_provider')}
+                  </div>
+                )}
+                {clients.length > 0 && !hasAccess && (
                   <div className="alert alert-error" style={{ fontSize: 13 }}>
                     ⚠ {t('clients.no_clients_provider')}
                   </div>
