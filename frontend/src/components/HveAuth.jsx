@@ -54,6 +54,11 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
   const { t } = useTranslation();
   const cfg = useServerConfig(serverConfig);
   const didPrefill = useRef(false);
+  const certFileRef = useRef(null);
+  const keyFileRef = useRef(null);
+  const [overrideCert, setOverrideCert] = useState(false);
+  const serverHasCert = !keepHint && cfg?.credential === 'certificate';
+  const certLocked = serverHasCert && !overrideCert;
 
   useEffect(() => {
     if (!prefill || !cfg || didPrefill.current) return;
@@ -66,7 +71,23 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
     }));
   }, [cfg, prefill, onChange]);
 
+  useEffect(() => {
+    if (!certLocked) return;
+    onChange(current => {
+      if (!current.certificate_pem && !current.private_key_pem) return current;
+      return { ...current, certificate_pem: '', private_key_pem: '' };
+    });
+  }, [certLocked, onChange]);
+
   const set = (patch) => onChange({ ...value, ...patch });
+
+  const setOverride = (on) => {
+    setOverrideCert(on);
+    if (on) return;
+    if (certFileRef.current) certFileRef.current.value = '';
+    if (keyFileRef.current) keyFileRef.current.value = '';
+    onChange(current => ({ ...current, certificate_pem: '', private_key_pem: '' }));
+  };
 
   return (
     <div>
@@ -97,15 +118,29 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
           {keepHint && (
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>{t('providers.hve.cert_keep')}</div>
           )}
-          {!keepHint && cfg?.credential === 'certificate' && !value.certificate_pem && !value.private_key_pem && (
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>{t('providers.hve.server_cert')}</div>
+          {serverHasCert && (
+            <div className="alert alert-success" style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 600, marginBottom: 10 }}>{t('providers.hve.server_cert')}</div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={overrideCert}
+                  onChange={e => setOverride(e.target.checked)}
+                />
+                {t('providers.hve.override_server_cert')}
+              </label>
+            </div>
           )}
-          <div className="form-group">
+          <div className="form-group" style={certLocked ? { opacity: 0.55 } : undefined}>
             <label className="form-label">{t('providers.hve.cert')}</label>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{t('providers.hve.pem_entry')}</div>
+            {!certLocked && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{t('providers.hve.pem_entry')}</div>
+            )}
             <input
+              ref={certFileRef}
               type="file"
               accept=".pem,.crt,.cer,.txt"
+              disabled={certLocked}
               onChange={async e => {
                 const file = e.target.files && e.target.files[0];
                 if (file) set({ certificate_pem: await file.text() });
@@ -116,16 +151,21 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
               rows={4}
               value={value.certificate_pem}
               spellCheck={false}
+              disabled={certLocked}
               style={{ fontFamily: 'monospace', fontSize: 12, marginTop: 6 }}
               onChange={e => set({ certificate_pem: e.target.value })}
             />
           </div>
-          <div className="form-group">
+          <div className="form-group" style={certLocked ? { opacity: 0.55 } : undefined}>
             <label className="form-label">{t('providers.hve.key')}</label>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{t('providers.hve.pem_entry')}</div>
+            {!certLocked && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{t('providers.hve.pem_entry')}</div>
+            )}
             <input
+              ref={keyFileRef}
               type="file"
               accept=".pem,.key,.txt"
+              disabled={certLocked}
               onChange={async e => {
                 const file = e.target.files && e.target.files[0];
                 if (file) set({ private_key_pem: await file.text() });
@@ -136,6 +176,7 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
               rows={4}
               value={value.private_key_pem}
               spellCheck={false}
+              disabled={certLocked}
               style={{ fontFamily: 'monospace', fontSize: 12, marginTop: 6 }}
               onChange={e => set({ private_key_pem: e.target.value })}
             />
