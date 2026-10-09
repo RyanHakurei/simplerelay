@@ -5,9 +5,24 @@ import time
 import aiosmtplib
 from datetime import datetime
 from sqlalchemy import update
+from sqlalchemy.orm import object_session
 from backend.database import SessionLocal
 from backend.models import Provider, HealthCheck, ProviderStatus
 from backend.services.crypto import decrypt_password
+from backend.services.microsoft_oauth import (
+    MicrosoftOAuthError,
+    apply_token_updates,
+    ensure_access_token,
+    material_from_record,
+)
+from backend.services.xoauth2_smtp import probe_xoauth2
+
+
+def _flush_provider(provider: Provider) -> None:
+    """Write token changes before the status update, which does not include them."""
+    session = object_session(provider)
+    if session is not None:
+        session.flush()
 
 
 def _make_tls_context():
@@ -23,6 +38,9 @@ async def check_provider(provider: Provider) -> tuple[bool, int | None, str | No
     Returns (healthy, response_time_ms, error).
     """
     start = time.monotonic()
+    if provider.provider_type == "microsoft_hve":
+        return await _check_hve(provider, start)
+
     try:
         use_tls = provider.tls_mode == "ssl"
         start_tls = provider.tls_mode == "starttls"
@@ -56,6 +74,47 @@ async def check_provider(provider: Provider) -> tuple[bool, int | None, str | No
         return False, elapsed, str(e)
 
 
+async def _check_hve(provider: Provider, start: float) -> tuple[bool, int | None, str | None]:
+    """Fetch an HVE access token and AUTH XOAUTH2. Does not send a message."""
+    try:
+        material = material_from_record(provider)
+        token, updates = await asyncio.to_thread(ensure_access_token, material)
+        if updates:
+            apply_token_updates(provider, updates)
+            provider.oauth_status = "app" if provider.oauth_mode == "application" else "signed_in"
+            _flush_provider(provider)
+        await asyncio.to_thread(
+            probe_xoauth2,
+            provider.smtp_host,
+            provider.smtp_port,
+            provider.tls_mode,
+            provider.email,
+            token,
+        )
+        elapsed = int((time.monotonic() - start) * 1000)
+        return True, elapsed, None
+    except MicrosoftOAuthError as exc:
+        if exc.invalidate:
+            provider.oauth_refresh_token_encrypted = None
+            provider.oauth_access_token_encrypted = None
+            provider.oauth_token_expires_at = None
+            provider.oauth_status = "error"
+            _flush_provider(provider)
+        elapsed = int((time.monotonic() - start) * 1000)
+        if exc.code == "sign_in_required":
+            return False, elapsed, f"sign_in_required: {exc}"
+        return False, elapsed, str(exc)[:500]
+    except Exception as exc:
+        elapsed = int((time.monotonic() - start) * 1000)
+        detail = str(exc)[:300]
+        if "535" in detail or "Authentication" in detail:
+            detail += (
+                " HVE rejected the OAuth token. Sign in as the HVE mailbox, "
+                "or grant Mail.Send and Add-HVEAppAccess for application permission."
+            )
+        return False, elapsed, detail[:500]
+
+
 async def run_health_checks():
     """Check all active providers."""
     db = SessionLocal()
@@ -77,8 +136,16 @@ async def run_health_checks():
             )
             db.add(check)
 
-            # Update provider status
-            new_status = ProviderStatus.ACTIVE if healthy else ProviderStatus.ERROR
+            # Missing HVE sign-in is not a dead provider. Leave it active so mail
+            # stays queued and the dashboard can still start sign-in.
+            if error and error.startswith("sign_in_required"):
+                if provider.status in (ProviderStatus.ACTIVE, ProviderStatus.ERROR):
+                    new_status = ProviderStatus.ACTIVE
+                else:
+                    new_status = provider.status
+                error = error.split(":", 1)[1].strip()
+            else:
+                new_status = ProviderStatus.ACTIVE if healthy else ProviderStatus.ERROR
             db.execute(
                 update(Provider)
                 .where(Provider.id == provider.id)

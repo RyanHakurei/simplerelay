@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../api';
 import LanguageSwitcher from '../components/LanguageSwitcher';
+import HveFields, { HveSignIn, emptyHveForm, hvePayload, readError } from '../components/HveAuth';
 
 const STEPS = 5;
 
@@ -25,6 +26,9 @@ export default function Wizard({ onComplete }) {
   const [testLoading, setTestLoading] = useState(false);
   const [providerId, setProviderId] = useState(null);
   const [relayInfo, setRelayInfo] = useState({ hostname: '', port: 2525 });
+  const [hveChosen, setHveChosen] = useState(false);
+  const [hveForm, setHveForm] = useState(emptyHveForm);
+  const [hveSignedIn, setHveSignedIn] = useState(false);
 
   // Load relay connection info
   useEffect(() => {
@@ -39,8 +43,9 @@ export default function Wizard({ onComplete }) {
   }, [step]);
 
   // Step 1: Detect provider from email
-  const detectProvider = async () => {
+  const detectProvider = async (force = false) => {
     if (!email.includes('@')) return;
+    if (!force && hveChosen) return;
     setDetecting(true);
     try {
       const res = await apiFetch('/api/providers/detect', {
@@ -68,39 +73,62 @@ export default function Wizard({ onComplete }) {
 
   // Step 2: Save provider
   const saveProvider = async () => {
-    const authMethod = APP_PASSWORD_PROVIDERS.includes(providerType) ? 'app_password' : 'plain';
+    const isHve = providerType === 'microsoft_hve';
+    const authMethod = isHve ? 'oauth' : (APP_PASSWORD_PROVIDERS.includes(providerType) ? 'app_password' : 'plain');
     const res = await apiFetch('/api/providers/', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body: {
         provider_type: providerType || 'custom',
         email,
         smtp_host: credentials.host,
         smtp_port: credentials.port,
         tls_mode: credentials.tls,
         auth_method: authMethod,
-        username: credentials.user,
-        password: credentials.password,
+        username: credentials.user || email,
+        password: isHve ? undefined : credentials.password,
         is_default: true,
-      }),
+        ...(isHve ? hvePayload(hveForm) : {}),
+      },
     });
     if (res.ok) {
       const provider = await res.json();
       setProviderId(provider.id);
-      return provider.id;
+      setHveSignedIn(!!provider.oauth_signed_in);
+      setTestResult(null);
+      return provider;
     }
-    const err = await res.json().catch(() => null);
-    const msg = err?.detail || `Error ${res.status}`;
-    setTestResult({ healthy: false, error: msg });
+    setTestResult({ healthy: false, error: await readError(res) });
     return null;
+  };
+
+  // Save HVE app settings. Returns the provider, or null when the save failed.
+  const persistHve = async () => {
+    if (!providerId) return saveProvider();
+    const res = await apiFetch(`/api/providers/${providerId}/hve`, {
+      method: 'PATCH',
+      body: hvePayload(hveForm),
+    });
+    if (!res.ok) {
+      setTestResult({ healthy: false, error: await readError(res) });
+      return null;
+    }
+    const updated = await res.json();
+    setHveSignedIn(!!updated.oauth_signed_in);
+    setTestResult(null);
+    return updated;
   };
 
   // Step 2: Test connection (real SMTP AUTH)
   const testConnection = async () => {
     let id = providerId;
-    if (!id) {
-      id = await saveProvider();
-      if (!id) return;
+    if (providerType === 'microsoft_hve') {
+      const saved = await persistHve();
+      if (!saved) return;
+      id = saved.id;
+    } else if (!id) {
+      const created = await saveProvider();
+      if (!created) return;
+      id = created.id;
     } else {
       // Provider already saved — update credentials before testing
       await apiFetch(`/api/providers/${id}`, {
@@ -202,10 +230,40 @@ export default function Wizard({ onComplete }) {
   const needsAppPassword = APP_PASSWORD_PROVIDERS.includes(providerType);
   const appPasswordUrl = detected?.preset?.app_password_url || null;
 
+  const chooseHve = (on) => {
+    setHveChosen(on);
+    if (!on) {
+      setProviderType(null);
+      detectProvider(true);
+      return;
+    }
+    setProviderType('microsoft_hve');
+    setDetected({
+      provider_type: 'microsoft_hve',
+      provider_name: 'Microsoft 365 High Volume Email',
+      preset: { smtp_host: 'smtp.hve.mx.microsoft', smtp_port: 587, tls_mode: 'starttls' },
+    });
+    setCredentials(c => ({
+      ...c,
+      host: 'smtp.hve.mx.microsoft',
+      port: 587,
+      tls: 'starttls',
+      user: email,
+    }));
+  };
+
   const nextStep = async () => {
-    if (step === 2 && !providerId) {
-      const id = await saveProvider();
-      if (!id) return;
+    if (step === 2 && providerType === 'microsoft_hve') {
+      const saved = await persistHve();
+      if (!saved) return;
+      const mode = saved.oauth_mode || hveForm.oauth_mode;
+      if (mode !== 'application' && !saved.oauth_signed_in) {
+        setTestResult({ healthy: false, error: t('providers.hve.needs_signin') });
+        return;
+      }
+    } else if (step === 2 && !providerId) {
+      const created = await saveProvider();
+      if (!created) return;
     }
     if (step === 4) {
       await saveClient();
@@ -244,7 +302,7 @@ export default function Wizard({ onComplete }) {
               placeholder={t('wizard.step1_placeholder')}
               value={email}
               onChange={e => { setEmail(e.target.value); setDetected(null); }}
-              onBlur={detectProvider}
+              onBlur={() => detectProvider(false)}
             />
           </div>
           {detecting && <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>{t('wizard.step1_detecting')}</p>}
@@ -260,6 +318,12 @@ export default function Wizard({ onComplete }) {
           )}
           {detected && !detected.provider_name && !detected.preset && (
             <div className="alert alert-warning">{t('wizard.step1_not_detected')}</div>
+          )}
+          {email.includes('@') && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 14 }}>
+              <input type="checkbox" checked={hveChosen} onChange={e => chooseHve(e.target.checked)} />
+              {t('providers.hve.use')}
+            </label>
           )}
         </div>
       )}
@@ -309,16 +373,37 @@ export default function Wizard({ onComplete }) {
               </select>
             </div>
           </div>
-          <div className="form-group">
-            <label className="form-label">{t('wizard.step2_manual_user')}</label>
-            <input className="form-input" value={credentials.user} onChange={e => setCredentials({ ...credentials, user: e.target.value })} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">
-              {needsAppPassword ? t('wizard.step2_app_password_label') : t('wizard.step2_manual_password')}
-            </label>
-            <input className="form-input" type="password" value={credentials.password} onChange={e => setCredentials({ ...credentials, password: e.target.value })} />
-          </div>
+          {providerType === 'microsoft_hve' ? (
+            <HveFields value={hveForm} onChange={setHveForm} />
+          ) : (
+            <>
+              <div className="form-group">
+                <label className="form-label">{t('wizard.step2_manual_user')}</label>
+                <input className="form-input" value={credentials.user} onChange={e => setCredentials({ ...credentials, user: e.target.value })} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">
+                  {needsAppPassword ? t('wizard.step2_app_password_label') : t('wizard.step2_manual_password')}
+                </label>
+                <input className="form-input" type="password" value={credentials.password} onChange={e => setCredentials({ ...credentials, password: e.target.value })} />
+              </div>
+            </>
+          )}
+          {providerType === 'microsoft_hve' && providerId && hveForm.oauth_mode !== 'application' && (
+            <HveSignIn
+              provider={{
+                id: providerId,
+                email,
+                oauth_mode: hveForm.oauth_mode,
+                oauth_credential: hveForm.credential,
+                oauth_signed_in: hveSignedIn,
+                oauth_tenant_id: hveForm.tenant_id,
+                oauth_client_id: hveForm.client_id,
+              }}
+              onChanged={(signedIn) => setHveSignedIn(!!signedIn)}
+              beforeSignIn={async () => !!(await persistHve())}
+            />
+          )}
 
           {testResult && (
             <div className={`alert ${testResult.healthy ? 'alert-success' : 'alert-error'}`}>

@@ -37,6 +37,13 @@ sys.path.insert(0, "/app")
 
 from backend.config import settings
 from backend.services.crypto import decrypt_password
+from backend.services.microsoft_oauth import (
+    MicrosoftOAuthError,
+    encrypt_token_updates,
+    ensure_access_token,
+    material_from_record,
+)
+from backend.services.xoauth2_smtp import auth_xoauth2
 
 import psycopg2
 import psycopg2.extras
@@ -123,7 +130,7 @@ def lookup_proxies(conn, proxy_id=None, provider_type=None):
     Known providers (gmail, outlook …) NEVER get catch-all proxies,
     even if one was incorrectly assigned via proxy_id.
     """
-    _KNOWN_PROVIDERS = {"gmail", "outlook", "yahoo", "seznam", "mailcz",
+    _KNOWN_PROVIDERS = {"gmail", "outlook", "microsoft_hve", "yahoo", "seznam", "mailcz",
                         "icloud", "amazon_ses", "sendgrid"}
     is_known = provider_type in _KNOWN_PROVIDERS
 
@@ -468,7 +475,60 @@ def _reorder_headers_emclient(msg):
 # SMTP SEND — connect through proxy, EHLO as client
 # ══════════════════════════════════════════════════════════
 
-def send_via_provider(provider, proxy_row, raw_message, sender, recipient, envelope_sender=None):
+def acquire_hve_token(conn, provider_id: int) -> str:
+    """Lock the provider row, refresh the HVE access token if needed, and return it.
+
+    Token HTTP calls happen here, before the SMTP socket is pointed at a proxy.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, email, oauth_tenant_id, oauth_client_id, oauth_credential, oauth_mode,
+                   oauth_client_secret_encrypted, oauth_cert_pem_encrypted, oauth_key_pem_encrypted,
+                   oauth_refresh_token_encrypted, oauth_access_token_encrypted, oauth_token_expires_at
+            FROM providers
+            WHERE id = %s
+            FOR UPDATE
+        """, (provider_id,))
+        row = cur.fetchone()
+        if not row:
+            raise MicrosoftOAuthError("HVE provider not found", permanent=True)
+        try:
+            material = material_from_record(row)
+            token, updates = ensure_access_token(material)
+        except MicrosoftOAuthError as exc:
+            if exc.invalidate:
+                cur.execute("""
+                    UPDATE providers
+                    SET oauth_refresh_token_encrypted = NULL,
+                        oauth_access_token_encrypted = NULL,
+                        oauth_token_expires_at = NULL,
+                        oauth_status = 'error',
+                        last_error = %s
+                    WHERE id = %s
+                """, (str(exc)[:500], provider_id))
+            conn.commit()
+            raise
+        if updates:
+            encrypted = encrypt_token_updates(updates)
+            allowed = {
+                "oauth_access_token_encrypted",
+                "oauth_refresh_token_encrypted",
+                "oauth_token_expires_at",
+            }
+            if not set(encrypted).issubset(allowed):
+                raise MicrosoftOAuthError("Refusing to store an unexpected token field", permanent=True)
+            columns = list(encrypted.keys())
+            assignments = ", ".join(f"{column} = %s" for column in columns)
+            status = "app" if material["mode"] == "application" else "signed_in"
+            cur.execute(
+                f"UPDATE providers SET {assignments}, oauth_status = %s, last_error = NULL WHERE id = %s",
+                [encrypted[column] for column in columns] + [status, provider_id],
+            )
+        conn.commit()
+        return token
+
+
+def send_via_provider(provider, proxy_row, raw_message, sender, recipient, envelope_sender=None, conn=None):
     """Send email through provider's SMTP, optionally via SOCKS5 proxy.
     envelope_sender overrides MAIL FROM (used for domain routing).
     Returns (success, error_message).
@@ -479,11 +539,26 @@ def send_via_provider(provider, proxy_row, raw_message, sender, recipient, envel
     username = provider.get("username") or provider["email"]
     password_enc = provider.get("password_encrypted", "")
     mail_from = envelope_sender or sender
+    access_token = None
+    password = ""
 
-    try:
-        password = decrypt_password(password_enc) if password_enc else ""
-    except Exception:
-        return False, "cannot decrypt provider password"
+    if provider.get("provider_type") == "microsoft_hve":
+        if conn is None:
+            return False, "auth_error: HVE authentication is unavailable"
+        try:
+            access_token = acquire_hve_token(conn, provider["id"])
+        except MicrosoftOAuthError as exc:
+            if exc.code == "sign_in_required":
+                return False, f"oauth_pending: {exc}"
+            if exc.permanent:
+                return False, f"auth_error: {exc}"
+            return False, f"connection_error: {exc}"
+        log.info(f"HVE XOAUTH2 as {provider['email']}")
+    else:
+        try:
+            password = decrypt_password(password_enc) if password_enc else ""
+        except Exception:
+            return False, "cannot decrypt provider password"
 
     # Set up proxy
     original_socket, proxy_host = _apply_proxy(proxy_row)
@@ -506,13 +581,23 @@ def send_via_provider(provider, proxy_row, raw_message, sender, recipient, envel
                 smtp.starttls()
                 smtp.ehlo(ehlo_host)
 
-        smtp.login(username, password)
+        if access_token:
+            auth_xoauth2(smtp, provider["email"], access_token)
+        else:
+            smtp.login(username, password)
         smtp.sendmail(mail_from, [recipient], raw_message)
         smtp.quit()
         return True, None
 
     except smtplib.SMTPAuthenticationError as e:
-        return False, f"auth_error: {str(e)[:200]}"
+        detail = str(e)[:180]
+        if provider.get("provider_type") == "microsoft_hve":
+            detail += (
+                " HVE rejected the OAuth token. Sign in as the HVE mailbox, "
+                "or for application permission grant Mail.Send and run Add-HVEAppAccess "
+                "with the enterprise app object ID."
+            )
+        return False, f"auth_error: {detail[:400]}"
     except smtplib.SMTPRecipientsRefused as e:
         return False, f"recipient_refused: {str(e)[:200]}"
     except smtplib.SMTPException as e:
@@ -602,7 +687,9 @@ def main():
             proxy_info = f" via proxy {proxy['host']}:{proxy['port']}" if proxy else " (direct)"
             log.info(f"Attempt {i + 1}/{len(proxies)}: {provider['smtp_host']}:{provider['smtp_port']}{proxy_info}")
 
-            success, error = send_via_provider(provider, proxy, cleaned, sender, recipient, envelope_sender)
+            success, error = send_via_provider(
+                provider, proxy, cleaned, sender, recipient, envelope_sender, conn,
+            )
 
             if success:
                 log.info(f"Delivered: {sender} → {recipient}{proxy_info}")
@@ -617,15 +704,21 @@ def main():
 
             last_error = error
 
-            # Auth/recipient errors are permanent — don't try other proxies
-            if error and ("auth_error" in error or "recipient_refused" in error):
-                log.error(f"Permanent failure: {sender} → {recipient}: {error}")
+            # Auth/recipient errors are permanent. HVE sign-in is still missing:
+            # queue and retry instead of bouncing.
+            if error and (
+                error.startswith("oauth_pending")
+                or "auth_error" in error
+                or "recipient_refused" in error
+            ):
+                permanent = "auth_error" in error or "recipient_refused" in error
+                log.error(f"{'Permanent' if permanent else 'Waiting'} failure: {sender} → {recipient}: {error}")
                 log_to_db(conn, sender, recipient, provider["smtp_host"], "failed",
                            error=error, user_id=provider.get("user_id"),
                            provider_id=provider.get("id"),
                            proxy_name=proxy["host"] if proxy else None,
                            client_ip=client_address)
-                sys.exit(EX_UNAVAILABLE)
+                sys.exit(EX_UNAVAILABLE if permanent else EX_TEMPFAIL)
 
             # Connection error — log and try next proxy
             log.warning(f"Proxy failed{proxy_info}: {error}")

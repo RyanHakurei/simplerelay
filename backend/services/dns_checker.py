@@ -7,6 +7,7 @@ from backend.services.provider_presets import PROVIDER_PRESETS
 DKIM_SELECTORS = {
     "gmail": ["20230601", "20210112", "20251104", "google"],
     "outlook": ["selector1", "selector2"],
+    "microsoft_hve": ["selector1", "selector2"],
     "yahoo": ["s1024", "s2048"],
     "seznam": ["default", "beta"],
     "mailcz": ["default"],

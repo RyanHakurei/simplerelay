@@ -6,7 +6,7 @@ from pathlib import Path
 from backend.database import init_db
 from backend.config import settings
 from backend.i18n import get_all_translations
-from backend.routers import providers, clients, dashboard, auth, admin
+from backend.routers import providers, clients, dashboard, auth, admin, hve
 
 
 @asynccontextmanager
@@ -24,6 +24,7 @@ app = FastAPI(
 # API routes
 app.include_router(auth.router)
 app.include_router(providers.router)
+app.include_router(hve.router)
 app.include_router(clients.router)
 app.include_router(dashboard.router)
 app.include_router(admin.router)

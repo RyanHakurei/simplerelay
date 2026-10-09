@@ -14,6 +14,7 @@ from backend.services.postfix_config import write_and_reload
 from backend.services.dns_checker import check_domain
 from backend.services.crypto import encrypt_password
 from backend.services.auth import get_current_user
+from backend.services.microsoft_oauth import MicrosoftOAuthError, resolve_hve_on_create
 from backend.routers.admin import assign_proxy_round_robin, release_proxy
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,13 @@ class ProviderCreate(BaseModel):
     is_default: bool = False
     daily_limit: int | None = None
     domain_routing: bool = False
+    tenant_id: str | None = None
+    client_id: str | None = None
+    oauth_credential: str | None = None
+    oauth_mode: str | None = None
+    client_secret: str | None = None
+    certificate_pem: str | None = None
+    private_key_pem: str | None = None
 
 
 class ProviderOut(BaseModel):
@@ -53,6 +61,14 @@ class ProviderOut(BaseModel):
     locked_reason: str | None
     expires_at: datetime | None
     last_error: str | None
+    oauth_tenant_id: str | None = None
+    oauth_client_id: str | None = None
+    oauth_credential: str | None = None
+    oauth_mode: str | None = None
+    oauth_status: str | None = None
+    oauth_signed_in: bool = False
+    has_client_secret: bool = False
+    has_certificate: bool = False
 
     class Config:
         from_attributes = True
@@ -159,6 +175,25 @@ def create_provider(
     if existing:
         raise HTTPException(400, f"Provider for {data.email} already exists")
 
+    hve_values = {}
+    auth_method = data.auth_method
+    if data.provider_type == "microsoft_hve":
+        try:
+            hve_values = resolve_hve_on_create(
+                tenant_id=data.tenant_id,
+                client_id=data.client_id,
+                oauth_credential=data.oauth_credential,
+                oauth_mode=data.oauth_mode,
+                client_secret=data.client_secret,
+                certificate_pem=data.certificate_pem,
+                private_key_pem=data.private_key_pem,
+            )
+        except MicrosoftOAuthError as exc:
+            raise HTTPException(400, str(exc))
+        auth_method = "oauth"
+        data.password = None
+        data.username = data.username or data.email
+
     # If setting as default, unset other defaults for this user
     if data.is_default:
         db.query(Provider).filter(
@@ -182,13 +217,14 @@ def create_provider(
         smtp_host=data.smtp_host,
         smtp_port=data.smtp_port or 587,
         tls_mode=data.tls_mode,
-        auth_method=AuthMethod(data.auth_method),
+        auth_method=AuthMethod(auth_method),
         username=data.username or data.email,
         password_encrypted=encrypt_password(data.password) if data.password else None,
         is_default=data.is_default,
         daily_limit=data.daily_limit,
         domain_routing=data.domain_routing,
         expires_at=expires_at,
+        **hve_values,
     )
     db.add(provider)
     db.commit()
@@ -270,6 +306,9 @@ async def test_provider(
         raise HTTPException(404, "Provider not found")
 
     healthy, response_time, error = await check_provider(provider)
+    db.commit()
+    if error and error.startswith("sign_in_required:"):
+        error = error.split(":", 1)[1].strip()
     return {
         "healthy": healthy,
         "response_time_ms": response_time,

@@ -19,6 +19,7 @@ class AuthMethod(str, enum.Enum):
     PLAIN = "plain"
     APP_PASSWORD = "app_password"
     API_KEY = "api_key"
+    OAUTH = "oauth"
 
 
 class ProviderStatus(str, enum.Enum):
@@ -129,6 +130,25 @@ class Provider(Base):
     username = Column(String(255), nullable=True)
     password_encrypted = Column(Text, nullable=True)
 
+    # Microsoft 365 High Volume Email (OAuth). Secrets are Fernet-encrypted.
+    oauth_tenant_id = Column(String(64), nullable=True)
+    oauth_client_id = Column(String(64), nullable=True)
+    oauth_credential = Column(String(20), nullable=True)  # public, secret, certificate
+    oauth_mode = Column(String(20), nullable=True)  # delegated, application
+    oauth_status = Column(String(32), nullable=True)
+    oauth_client_secret_encrypted = Column(Text, nullable=True)
+    oauth_cert_pem_encrypted = Column(Text, nullable=True)
+    oauth_key_pem_encrypted = Column(Text, nullable=True)
+    oauth_refresh_token_encrypted = Column(Text, nullable=True)
+    oauth_access_token_encrypted = Column(Text, nullable=True)
+    oauth_token_expires_at = Column(DateTime, nullable=True)
+    oauth_device_code_encrypted = Column(Text, nullable=True)
+    oauth_device_expires_at = Column(DateTime, nullable=True)
+    oauth_poll_interval = Column(Integer, nullable=True)
+    oauth_pkce_verifier_encrypted = Column(Text, nullable=True)
+    oauth_user_code = Column(String(64), nullable=True)
+    oauth_verification_uri = Column(String(512), nullable=True)
+
     priority = Column(Integer, nullable=False, default=10)
     is_default = Column(Boolean, nullable=False, default=False)
     status = Column(Enum(ProviderStatus), nullable=False, default=ProviderStatus.ACTIVE)
@@ -155,6 +175,24 @@ class Provider(Base):
     __table_args__ = (
         Index("ix_providers_user_status", "user_id", "status"),
     )
+
+    @property
+    def oauth_signed_in(self) -> bool:
+        if self.provider_type != "microsoft_hve":
+            return False
+        if self.oauth_mode == "application":
+            return self.oauth_credential in ("secret", "certificate") and bool(
+                self.oauth_client_secret_encrypted or self.oauth_key_pem_encrypted
+            )
+        return bool(self.oauth_refresh_token_encrypted)
+
+    @property
+    def has_client_secret(self) -> bool:
+        return bool(self.oauth_client_secret_encrypted)
+
+    @property
+    def has_certificate(self) -> bool:
+        return bool(self.oauth_cert_pem_encrypted and self.oauth_key_pem_encrypted)
 
 
 # --- Access control (per-user) ---

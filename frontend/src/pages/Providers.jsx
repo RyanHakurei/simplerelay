@@ -1,6 +1,8 @@
 import { apiGet, apiFetch } from '../api';
 import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import HveFields, { HveSignIn, emptyHveForm, hvePayload, readError } from '../components/HveAuth';
 
 const APP_PASSWORD_PROVIDERS = ['gmail', 'outlook', 'yahoo'];
 
@@ -21,6 +23,11 @@ export default function Providers() {
   const [dnsResults, setDnsResults] = useState({});
   const [dnsLoading, setDnsLoading] = useState(null);
   const [showPassword, setShowPassword] = useState({});
+  const [hveChosen, setHveChosen] = useState(false);
+  const [hveForm, setHveForm] = useState(emptyHveForm);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const hveNotice = searchParams.get('hve');
+  const hveMessage = searchParams.get('message');
 
   // Per-provider clients
   const [providerClients, setProviderClients] = useState({});
@@ -53,8 +60,9 @@ export default function Providers() {
   };
 
   // Auto-detect provider from email
-  const detectProvider = async (email) => {
+  const detectProvider = async (email, force = false) => {
     if (!email || !email.includes('@')) return;
+    if (!force && hveChosen) return;
     setDetecting(true);
     try {
       const res = await apiFetch('/api/providers/detect', {
@@ -87,6 +95,26 @@ export default function Providers() {
     setForm({ ...form, host: preset.smtp_host, port: preset.smtp_port, tls: preset.tls_mode });
   };
 
+  const chooseHve = (on) => {
+    clearTimeout(detectTimer.current);
+    setHveChosen(on);
+    if (!on) {
+      setSelectedPreset(null);
+      setDetected(null);
+      if (form.email) detectProvider(form.email, true);
+      return;
+    }
+    const preset = presets.microsoft_hve || {
+      name: 'Microsoft 365 High Volume Email',
+      smtp_host: 'smtp.hve.mx.microsoft',
+      smtp_port: 587,
+      tls_mode: 'starttls',
+    };
+    setSelectedPreset('microsoft_hve');
+    setDetected({ provider_type: 'microsoft_hve', provider_name: preset.name, preset });
+    setForm(f => ({ ...f, host: preset.smtp_host, port: preset.smtp_port, tls: preset.tls_mode, user: f.email || f.user }));
+  };
+
   const needsAppPassword = APP_PASSWORD_PROVIDERS.includes(selectedPreset);
   const appPasswordUrl = detected?.preset?.app_password_url
     || (selectedPreset && presets[selectedPreset]?.app_password_url);
@@ -98,11 +126,11 @@ export default function Providers() {
   };
 
   const addProvider = async () => {
-    const authMethod = needsAppPassword ? 'app_password' : 'plain';
-    await apiFetch('/api/providers/', {
+    const isHve = selectedPreset === 'microsoft_hve';
+    const authMethod = isHve ? 'oauth' : (needsAppPassword ? 'app_password' : 'plain');
+    const res = await apiFetch('/api/providers/', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body: {
         provider_type: selectedPreset || 'custom',
         email: form.email,
         smtp_host: form.host,
@@ -110,12 +138,19 @@ export default function Providers() {
         tls_mode: form.tls,
         auth_method: authMethod,
         username: form.user || form.email,
-        password: form.password,
-      }),
+        password: isHve ? undefined : form.password,
+        ...(isHve ? hvePayload(hveForm) : {}),
+      },
     });
+    if (!res.ok) {
+      alert(await readError(res));
+      return;
+    }
     setShowAdd(false);
     setSelectedPreset(null);
     setDetected(null);
+    setHveChosen(false);
+    setHveForm(emptyHveForm());
     setForm({ email: '', host: '', port: 587, user: '', password: '', tls: 'starttls' });
     loadProviders();
   };
@@ -262,6 +297,19 @@ export default function Providers() {
         </button>
       </div>
 
+      {hveNotice === 'ok' && (
+        <div className="alert alert-success" style={{ marginBottom: 12 }}>
+          {t('providers.hve.callback_ok')}
+          <button className="btn btn-secondary btn-sm" style={{ marginLeft: 8 }} onClick={() => setSearchParams({})}>{t('common.close')}</button>
+        </div>
+      )}
+      {hveNotice === 'error' && (
+        <div className="alert alert-error" style={{ marginBottom: 12 }}>
+          {t('providers.hve.callback_error', { error: hveMessage || '' })}
+          <button className="btn btn-secondary btn-sm" style={{ marginLeft: 8 }} onClick={() => setSearchParams({})}>{t('common.close')}</button>
+        </div>
+      )}
+
       {showAdd && (
         <div className="card">
           <div className="form-group">
@@ -291,6 +339,11 @@ export default function Providers() {
               {t('wizard.step1_detected', { provider: detected.provider_name })}
             </div>
           )}
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 14 }}>
+            <input type="checkbox" checked={hveChosen} onChange={e => chooseHve(e.target.checked)} />
+            {t('providers.hve.use')}
+          </label>
 
           {needsAppPassword && (
             <div className="alert alert-warning" style={{ marginBottom: 12 }}>
@@ -323,18 +376,22 @@ export default function Providers() {
               </select>
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div className="form-group">
-              <label className="form-label">{t('wizard.step2_manual_user')}</label>
-              <input className="form-input" value={form.user} onChange={e => setForm({ ...form, user: e.target.value })} />
+          {selectedPreset === 'microsoft_hve' ? (
+            <HveFields value={hveForm} onChange={setHveForm} />
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div className="form-group">
+                <label className="form-label">{t('wizard.step2_manual_user')}</label>
+                <input className="form-input" value={form.user} onChange={e => setForm({ ...form, user: e.target.value })} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">
+                  {needsAppPassword ? t('wizard.step2_app_password_label') : t('wizard.step2_manual_password')}
+                </label>
+                <input className="form-input" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} />
+              </div>
             </div>
-            <div className="form-group">
-              <label className="form-label">
-                {needsAppPassword ? t('wizard.step2_app_password_label') : t('wizard.step2_manual_password')}
-              </label>
-              <input className="form-input" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} />
-            </div>
-          </div>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-primary" onClick={addProvider}>{t('common.save')}</button>
             <button className="btn btn-secondary" onClick={() => setShowAdd(false)}>{t('common.cancel')}</button>
@@ -388,6 +445,10 @@ export default function Providers() {
                 <div className="alert alert-error" style={{ fontSize: 13, marginBottom: 12 }}>
                   🔒 {p.locked_reason}
                 </div>
+              )}
+
+              {p.provider_type === 'microsoft_hve' && (
+                <HveSignIn provider={p} onChanged={loadProviders} />
               )}
 
               {/* Domain routing toggle — only for supported provider types */}

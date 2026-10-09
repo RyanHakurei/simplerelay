@@ -25,6 +25,17 @@ class Settings(BaseSettings):
     smtp_tls: bool = True
     base_url: str = "http://localhost:8080"  # for verification links
 
+    # Microsoft 365 High Volume Email. Optional server-wide Entra app.
+    # Each HVE provider can override these in the dashboard.
+    hve_tenant_id: str = ""
+    hve_client_id: str = ""
+    hve_client_secret: str = ""
+    hve_cert_file: str = ""
+    hve_key_file: str = ""
+    # Override the delegated scope if the app registration needs a specific one.
+    # Default: offline_access https://outlook.office.com/.default
+    hve_scope: str = ""
+
     class Config:
         env_prefix = "RELAY_"
         env_file = ".env"

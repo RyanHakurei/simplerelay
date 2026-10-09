@@ -401,7 +401,7 @@ def assign_proxy_round_robin(db: Session, provider_type: str = None) -> Proxy | 
     list them in provider_types.  Catch-all proxies (provider_types IS NULL)
     are reserved for custom / unknown provider types.
     """
-    _KNOWN_PROVIDERS = {"gmail", "outlook", "yahoo", "seznam", "mailcz",
+    _KNOWN_PROVIDERS = {"gmail", "outlook", "microsoft_hve", "yahoo", "seznam", "mailcz",
                         "icloud", "amazon_ses", "sendgrid"}
 
     proxies = db.query(Proxy).filter(
