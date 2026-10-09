@@ -309,11 +309,14 @@ async def test_provider(
     db.commit()
     if error and error.startswith("sign_in_required:"):
         error = error.split(":", 1)[1].strip()
-    return {
+    payload = {
         "healthy": healthy,
         "response_time_ms": response_time,
         "error": error,
     }
+    if provider.provider_type == "microsoft_hve":
+        payload["oauth_signed_in"] = bool(provider.oauth_signed_in)
+    return payload
 
 
 @router.post("/dns-check")

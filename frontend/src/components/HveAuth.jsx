@@ -102,6 +102,7 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
           )}
           <div className="form-group">
             <label className="form-label">{t('providers.hve.cert')}</label>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{t('providers.hve.pem_entry')}</div>
             <input
               type="file"
               accept=".pem,.crt,.cer,.txt"
@@ -121,6 +122,7 @@ export default function HveFields({ value, onChange, serverConfig, prefill = tru
           </div>
           <div className="form-group">
             <label className="form-label">{t('providers.hve.key')}</label>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{t('providers.hve.pem_entry')}</div>
             <input
               type="file"
               accept=".pem,.key,.txt"
@@ -189,16 +191,30 @@ export function HveSignIn({ provider, onChanged, beforeSignIn, showEdit = true }
     poller.current = setTimeout(async () => {
       try {
         const res = await apiFetch(`/api/providers/${provider.id}/hve/device`);
-        const data = await res.json();
-        if (data.status === 'signed_in') {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setWaiting(false);
+          setError(typeof data.detail === 'string' ? data.detail : (data.error || t('providers.hve.error', { error: res.status })));
+          return;
+        }
+        // The poll used to report signed-in before a refresh token was stored.
+        if (data.status === 'signed_in' && data.oauth_signed_in !== false) {
           setPending(null);
           setWaiting(false);
           onChanged(true);
           return;
         }
+        if (data.status === 'signed_in') {
+          setPending(null);
+          setWaiting(false);
+          onChanged(false);
+          setError(t('providers.hve.needs_signin'));
+          return;
+        }
         if (data.status === 'error') {
           setWaiting(false);
           setError(data.error || t('providers.hve.error', { error: '' }));
+          if (data.oauth_signed_in === false) onChanged(false);
           return;
         }
         if (data.user_code) setPending(data);
@@ -305,8 +321,12 @@ export function HveSignIn({ provider, onChanged, beforeSignIn, showEdit = true }
     <div style={{ marginBottom: 12 }}>
       <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>
         {t('providers.hve.internal_only')}
-        {' '}
-        {t('providers.hve.credential_on_file', { kind })}
+        {showEdit && (
+          <>
+            {' '}
+            {t('providers.hve.credential_on_file', { kind })}
+          </>
+        )}
       </div>
 
       {provider.oauth_mode === 'application' && (

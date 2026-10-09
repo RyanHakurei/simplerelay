@@ -35,10 +35,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from backend.config import settings
 from backend.services.crypto import decrypt_password, encrypt_password
 
-# Audience documented for HVE OAuth. `.default` uses the permissions
-# already granted on the app registration. offline_access is what makes
-# Microsoft return a refresh token for the mailbox sign-in.
-DEFAULT_DELEGATED_SCOPE = "offline_access https://outlook.office.com/.default"
+# Mailbox sign-in needs a refresh token. Microsoft will not issue one when
+# offline_access is combined with the /.default scope, so delegated sign-in
+# asks for the HVE Mail.Send permission directly. Application tokens still
+# use /.default.
+DEFAULT_DELEGATED_SCOPE = "offline_access https://outlook.office.com/Mail.Send"
 DEFAULT_APP_SCOPE = "https://outlook.office.com/.default"
 HVE_REFRESH_SKEW = timedelta(seconds=600)
 
@@ -374,6 +375,22 @@ def start_device_flow(tenant_id: str, client_id: str) -> dict:
     }
 
 
+def _require_refresh(tokens: dict) -> dict:
+    """A delegated sign-in is only finished when Microsoft returns a refresh token.
+
+    An access token alone expires within an hour. The dashboard would show
+    signed-in, then the next send would ask the mailbox to sign in again.
+    """
+    if not (tokens.get("refresh_token") or "").strip():
+        raise MicrosoftOAuthError(
+            "Microsoft did not return a refresh token, so the mailbox is not signed in. "
+            "Turn on Allow public client flows, and grant delegated Mail.Send with admin consent.",
+            code="no_refresh_token",
+            permanent=False,
+        )
+    return tokens
+
+
 def redeem_device_code(material: dict, device_code: str) -> dict:
     data = {
         "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
@@ -382,7 +399,7 @@ def redeem_device_code(material: dict, device_code: str) -> dict:
         "scope": delegated_scope(),
     }
     data.update(client_auth_params(material))
-    return tokens_from_payload(post_form(token_endpoint(material["tenant_id"]), data))
+    return _require_refresh(tokens_from_payload(post_form(token_endpoint(material["tenant_id"]), data)))
 
 
 def redeem_auth_code(material: dict, code: str, code_verifier: str) -> dict:
@@ -395,7 +412,7 @@ def redeem_auth_code(material: dict, code: str, code_verifier: str) -> dict:
         "code_verifier": code_verifier,
     }
     data.update(client_auth_params(material))
-    return tokens_from_payload(post_form(token_endpoint(material["tenant_id"]), data))
+    return _require_refresh(tokens_from_payload(post_form(token_endpoint(material["tenant_id"]), data)))
 
 
 def refresh_delegated(material: dict) -> dict:

@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     hve_cert_file: str = ""
     hve_key_file: str = ""
     # Override the delegated scope if the app registration needs a specific one.
-    # Default: offline_access https://outlook.office.com/.default
+    # Default: offline_access https://outlook.office.com/Mail.Send
     hve_scope: str = ""
 
     class Config:

@@ -19,6 +19,7 @@ from backend.services.microsoft_oauth import (
     certificate_thumbprint,
     ensure_access_token,
     interpret_token_response,
+    redeem_device_code,
     resolve_hve_on_create,
     start_device_flow,
     token_is_fresh,
@@ -111,6 +112,55 @@ class TokenResponseTests(unittest.TestCase):
             flow = start_device_flow(TENANT, CLIENT)
         self.assertEqual(flow["user_code"], "ABCD")
         self.assertEqual(flow["verification_uri"], "https://login.microsoft.com/device")
+
+    def test_device_start_requests_mail_send_with_offline_access(self):
+        with patch("backend.services.microsoft_oauth.post_form", return_value={
+            "device_code": "d",
+            "user_code": "ABCD",
+            "expires_in": 900,
+            "interval": 5,
+        }) as post:
+            start_device_flow(TENANT, CLIENT)
+        scope = post.call_args[0][1]["scope"]
+        self.assertEqual(scope, "offline_access https://outlook.office.com/Mail.Send")
+        self.assertNotIn(".default", scope)
+
+    def test_device_redeem_requires_refresh_token(self):
+        cert_pem, key_pem, _ = _cert_and_key()
+        material = {
+            "tenant_id": TENANT,
+            "client_id": CLIENT,
+            "credential": "certificate",
+            "certificate_pem": cert_pem,
+            "private_key_pem": key_pem,
+        }
+        with patch("backend.services.microsoft_oauth.post_form", return_value={
+            "access_token": "access-only",
+            "expires_in": 3600,
+        }):
+            with self.assertRaises(MicrosoftOAuthError) as caught:
+                redeem_device_code(material, "device-code")
+        self.assertEqual(caught.exception.code, "no_refresh_token")
+
+    def test_device_redeem_keeps_refresh_token(self):
+        cert_pem, key_pem, _ = _cert_and_key()
+        material = {
+            "tenant_id": TENANT,
+            "client_id": CLIENT,
+            "credential": "certificate",
+            "certificate_pem": cert_pem,
+            "private_key_pem": key_pem,
+        }
+
+        def fake_post(url, data):
+            self.assertIn("client_assertion", data)
+            self.assertEqual(data["scope"], "offline_access https://outlook.office.com/Mail.Send")
+            return {"access_token": "access", "refresh_token": "refresh", "expires_in": 3600}
+
+        with patch("backend.services.microsoft_oauth.post_form", side_effect=fake_post):
+            tokens = redeem_device_code(material, "device-code")
+        self.assertEqual(tokens["refresh_token"], "refresh")
+        self.assertEqual(tokens["access_token"], "access")
 
     def test_device_code_payload_is_success(self):
         payload = interpret_token_response(200, {"device_code": "d", "user_code": "ABCD"})

@@ -111,6 +111,7 @@
       "secret_keep": "A secret is already saved. Leave this blank to keep it.",
       "cert": "Certificate (PEM)",
       "key": "Private key (PEM)",
+      "pem_entry": "Upload the file or paste the PEM below. Either one is enough.",
       "cert_keep": "A certificate is already saved. Leave both fields blank to keep it.",
       "server_cert": "This server already has a certificate. Leave the fields blank to use it.",
       "server_secret": "This server already has a client secret. Leave the field blank to use it.",

@@ -198,6 +198,13 @@ export default function Providers() {
     const res = await apiFetch(`/api/providers/${id}/test`, { method: 'POST' });
     const data = await res.json();
     alert(data.healthy ? t('wizard.step2_test_ok') : t('wizard.step2_test_fail', { error: data.error }));
+    if (typeof data.oauth_signed_in === 'boolean') {
+      setCreatedHve(current => (
+        current && String(current.id) === String(id)
+          ? { ...current, oauth_signed_in: data.oauth_signed_in }
+          : current
+      ));
+    }
     loadProviders();
   };
 
@@ -365,7 +372,22 @@ export default function Providers() {
             <button className="btn btn-secondary" onClick={() => setHveStage('setup')}>{t('common.back')}</button>
             <button
               className="btn btn-primary"
-              onClick={closeAdd}
+              onClick={async () => {
+                if (createdHve.oauth_mode === 'application') {
+                  closeAdd();
+                  return;
+                }
+                const res = await apiFetch('/api/providers/');
+                const rows = await res.json().catch(() => []);
+                const row = Array.isArray(rows)
+                  ? rows.find(item => String(item.id) === String(createdHve.id))
+                  : null;
+                if (!row?.oauth_signed_in) {
+                  setCreatedHve(current => (current ? { ...current, oauth_signed_in: false } : current));
+                  return;
+                }
+                closeAdd();
+              }}
               disabled={createdHve.oauth_mode !== 'application' && !createdHve.oauth_signed_in}
             >
               {t('common.next')}
@@ -521,7 +543,7 @@ export default function Providers() {
                 </div>
               )}
 
-              {p.provider_type === 'microsoft_hve' && !(showAdd && createdHve && createdHve.id === p.id) && (
+              {p.provider_type === 'microsoft_hve' && !(showAdd && createdHve && String(createdHve.id) === String(p.id)) && (
                 <HveSignIn provider={p} onChanged={loadProviders} />
               )}
 

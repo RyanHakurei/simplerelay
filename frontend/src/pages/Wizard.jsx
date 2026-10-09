@@ -261,7 +261,9 @@ export default function Wizard({ onComplete }) {
     setTestResult(null);
     try {
       const res = await apiFetch(`/api/providers/${providerId}/test`, { method: 'POST' });
-      setTestResult(await res.json());
+      const data = await res.json();
+      setTestResult(data);
+      if (typeof data.oauth_signed_in === 'boolean') setHveSignedIn(data.oauth_signed_in);
     } catch (e) {
       setTestResult({ healthy: false, error: String(e) });
     }
@@ -275,6 +277,17 @@ export default function Wizard({ onComplete }) {
     } else if (step === 2 && !providerId) {
       const created = await saveProvider();
       if (!created) return;
+    }
+    if (hveFlow && step === 3 && hveForm.oauth_mode !== 'application') {
+      const res = await apiFetch('/api/providers/');
+      const rows = await res.json().catch(() => []);
+      const row = Array.isArray(rows) ? rows.find(item => String(item.id) === String(providerId)) : null;
+      if (!row?.oauth_signed_in) {
+        setHveSignedIn(false);
+        setTestResult({ healthy: false, error: t('providers.hve.needs_signin') });
+        return;
+      }
+      setHveSignedIn(true);
     }
     if (step === accessStep) {
       await saveClient();
@@ -445,17 +458,15 @@ export default function Wizard({ onComplete }) {
               )}
             </>
           )}
+          {testResult && (
+            <div className={`alert ${testResult.healthy ? 'alert-success' : 'alert-error'}`}>
+              {testResult.healthy ? t('wizard.step2_test_ok') : t('wizard.step2_test_fail', { error: testResult.error })}
+            </div>
+          )}
           {(hveSignedIn || hveForm.oauth_mode === 'application') && (
-            <>
-              {testResult && (
-                <div className={`alert ${testResult.healthy ? 'alert-success' : 'alert-error'}`}>
-                  {testResult.healthy ? t('wizard.step2_test_ok') : t('wizard.step2_test_fail', { error: testResult.error })}
-                </div>
-              )}
-              <button className="btn btn-secondary" onClick={testMailbox} disabled={testLoading}>
-                {testLoading ? t('common.loading') : t('wizard.step2_test')}
-              </button>
-            </>
+            <button className="btn btn-secondary" onClick={testMailbox} disabled={testLoading}>
+              {testLoading ? t('common.loading') : t('wizard.step2_test')}
+            </button>
           )}
         </div>
       )}

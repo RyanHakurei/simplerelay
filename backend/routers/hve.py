@@ -1,4 +1,5 @@
 """Sign-in flow for Microsoft 365 High Volume Email mailboxes."""
+import threading
 import time
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -36,6 +37,21 @@ router = APIRouter(prefix="/api/providers", tags=["hve"])
 
 # Last time we called Microsoft for a device-code poll, per provider.
 _last_poll: dict[int, float] = {}
+_poll_guard = threading.Lock()
+_poll_locks: dict[int, threading.Lock] = {}
+
+
+def _provider_poll_lock(provider_id: int) -> threading.Lock:
+    with _poll_guard:
+        lock = _poll_locks.get(provider_id)
+        if lock is None:
+            lock = threading.Lock()
+            _poll_locks[provider_id] = lock
+        return lock
+
+
+def _signed_in_payload(provider: Provider) -> dict:
+    return {"status": "signed_in", "oauth_signed_in": bool(provider.oauth_signed_in)}
 
 
 class HveUpdate(BaseModel):
@@ -131,48 +147,62 @@ def poll_device_signin(
 ):
     """One poll of the device-code sign-in. Call again after `interval` seconds."""
     provider = _hve_provider(db, provider_id, user)
-    if provider.oauth_signed_in and provider.oauth_mode != "application":
-        return {"status": "signed_in"}
-    if provider.oauth_mode == "application":
-        return {"status": "signed_in"}
-    if not provider.oauth_device_code_encrypted:
-        return {"status": "idle"}
-    if provider.oauth_device_expires_at and provider.oauth_device_expires_at < datetime.utcnow():
-        provider.oauth_device_code_encrypted = None
-        provider.oauth_user_code = None
-        provider.oauth_status = STATUS_NEEDS_SIGNIN
-        db.commit()
-        return {"status": "error", "error": "That code expired. Start sign-in again."}
-
-    wait = provider.oauth_poll_interval or 5
-    now = time.monotonic()
-    if now - _last_poll.get(provider.id, 0) < wait:
+    # One redeem at a time. A second poll of the same device code is not a second sign-in.
+    lock = _provider_poll_lock(provider.id)
+    if not lock.acquire(blocking=False):
         return _pending_payload(provider)
-
-    _last_poll[provider.id] = now
     try:
-        device_code = decrypt_password(provider.oauth_device_code_encrypted)
-        material = material_from_record(provider)
-        tokens = redeem_device_code(material, device_code)
-    except MicrosoftOAuthError as exc:
-        if exc.code in ("authorization_pending", "slow_down"):
-            if exc.code == "slow_down":
-                provider.oauth_poll_interval = (provider.oauth_poll_interval or 5) + 5
-                db.commit()
-            return _pending_payload(provider)
-        provider.last_error = str(exc)[:500]
-        provider.oauth_status = "error"
-        if exc.code in ("expired_token", "bad_verification_code", "authorization_declined", "access_denied"):
+        db.refresh(provider)
+        if provider.oauth_mode == "application":
+            return {"status": "app", "oauth_signed_in": bool(provider.oauth_signed_in)}
+        if provider.oauth_signed_in:
+            return _signed_in_payload(provider)
+        if not provider.oauth_device_code_encrypted:
+            return {"status": "idle", "oauth_signed_in": False}
+        if provider.oauth_device_expires_at and provider.oauth_device_expires_at < datetime.utcnow():
             provider.oauth_device_code_encrypted = None
             provider.oauth_user_code = None
             provider.oauth_status = STATUS_NEEDS_SIGNIN
-        db.commit()
-        return {"status": "error", "error": str(exc)}
+            db.commit()
+            return {"status": "error", "error": "That code expired. Start sign-in again.", "oauth_signed_in": False}
 
-    store_mailbox_tokens(provider, tokens)
-    db.commit()
-    _last_poll.pop(provider.id, None)
-    return {"status": "signed_in"}
+        wait = provider.oauth_poll_interval or 5
+        now = time.monotonic()
+        if now - _last_poll.get(provider.id, 0) < wait:
+            return _pending_payload(provider)
+
+        _last_poll[provider.id] = now
+        try:
+            device_code = decrypt_password(provider.oauth_device_code_encrypted)
+            material = material_from_record(provider)
+            tokens = redeem_device_code(material, device_code)
+        except MicrosoftOAuthError as exc:
+            if exc.code in ("authorization_pending", "slow_down"):
+                if exc.code == "slow_down":
+                    provider.oauth_poll_interval = (provider.oauth_poll_interval or 5) + 5
+                    db.commit()
+                return _pending_payload(provider)
+            provider.last_error = str(exc)[:500]
+            provider.oauth_status = "error"
+            if exc.code in (
+                "expired_token",
+                "bad_verification_code",
+                "authorization_declined",
+                "access_denied",
+                "no_refresh_token",
+            ):
+                provider.oauth_device_code_encrypted = None
+                provider.oauth_user_code = None
+                provider.oauth_status = STATUS_NEEDS_SIGNIN
+            db.commit()
+            return {"status": "error", "error": str(exc), "oauth_signed_in": bool(provider.oauth_signed_in)}
+
+        store_mailbox_tokens(provider, tokens)
+        db.commit()
+        _last_poll.pop(provider.id, None)
+        return _signed_in_payload(provider)
+    finally:
+        lock.release()
 
 
 @router.post("/{provider_id}/hve/redirect")

@@ -110,6 +110,7 @@
       "secret_keep": "Ya hay un secreto guardado. Déjalo en blanco para conservarlo.",
       "cert": "Certificado (PEM)",
       "key": "Clave privada (PEM)",
+      "pem_entry": "Sube el archivo o pega el PEM debajo. Basta con uno de los dos.",
       "cert_keep": "Ya hay un certificado guardado. Deja ambos campos en blanco para conservarlo.",
       "server_cert": "Este servidor ya tiene un certificado. Deja los campos en blanco para usarlo.",
       "server_secret": "Este servidor ya tiene un secreto de cliente. Deja el campo en blanco para usarlo.",

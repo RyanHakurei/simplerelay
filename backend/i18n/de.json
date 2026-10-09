@@ -111,6 +111,7 @@
       "secret_keep": "Ein Secret ist gespeichert. Leer lassen, um es zu behalten.",
       "cert": "Zertifikat (PEM)",
       "key": "Privater Schlüssel (PEM)",
+      "pem_entry": "Datei hochladen oder das PEM unten einfügen. Eines von beidem genügt.",
       "cert_keep": "Ein Zertifikat ist gespeichert. Beide Felder leer lassen, um es zu behalten.",
       "server_cert": "Auf dem Server liegt bereits ein Zertifikat. Felder leer lassen, um es zu verwenden.",
       "server_secret": "Auf dem Server liegt bereits ein Client secret. Feld leer lassen, um es zu verwenden.",
